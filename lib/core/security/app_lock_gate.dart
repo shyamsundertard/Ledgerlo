@@ -25,6 +25,7 @@ class _AppLockGateState extends ConsumerState<AppLockGate>
   bool _shouldRelockOnResume = false;
   bool _initialAuthTriggered = false;
   String? _errorMessage;
+  DateTime? _backgroundedAt;
 
   @override
   void initState() {
@@ -47,6 +48,7 @@ class _AppLockGateState extends ConsumerState<AppLockGate>
         return;
       }
       _shouldRelockOnResume = true;
+      _backgroundedAt ??= DateTime.now();
       return;
     }
 
@@ -59,7 +61,19 @@ class _AppLockGateState extends ConsumerState<AppLockGate>
         return;
       }
       if (_shouldRelockOnResume && settings.appLockEnabled && _unlocked) {
+        final backgroundedAt = _backgroundedAt;
+        final cooldown = Duration(seconds: settings.appLockCooldown.seconds);
+        final shouldLockNow =
+            backgroundedAt == null ||
+            DateTime.now().difference(backgroundedAt) >= cooldown;
+
         _shouldRelockOnResume = false;
+        _backgroundedAt = null;
+
+        if (!shouldLockNow) {
+          return;
+        }
+
         setState(() {
           _unlocked = false;
           _errorMessage = null;

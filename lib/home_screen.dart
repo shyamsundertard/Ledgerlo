@@ -21,6 +21,165 @@ import 'customer_ledger_screen.dart';
 import 'core/backup/csv_backup_service.dart';
 import 'core/backup/backup_notification_service.dart';
 
+enum _CustomerSortOption {
+  latestTransactionDesc,
+  latestTransactionAsc,
+  nameAsc,
+  nameDesc,
+  balanceDesc,
+  balanceAsc,
+}
+
+extension on _CustomerSortOption {
+  String get label {
+    switch (this) {
+      case _CustomerSortOption.latestTransactionDesc:
+        return 'Latest activity';
+      case _CustomerSortOption.latestTransactionAsc:
+        return 'Oldest activity';
+      case _CustomerSortOption.nameAsc:
+        return 'Name A-Z';
+      case _CustomerSortOption.nameDesc:
+        return 'Name Z-A';
+      case _CustomerSortOption.balanceDesc:
+        return 'Balance high to low';
+      case _CustomerSortOption.balanceAsc:
+        return 'Balance low to high';
+    }
+  }
+
+  String get storageValue {
+    switch (this) {
+      case _CustomerSortOption.latestTransactionDesc:
+        return 'latest_desc';
+      case _CustomerSortOption.latestTransactionAsc:
+        return 'latest_asc';
+      case _CustomerSortOption.nameAsc:
+        return 'name_asc';
+      case _CustomerSortOption.nameDesc:
+        return 'name_desc';
+      case _CustomerSortOption.balanceDesc:
+        return 'balance_desc';
+      case _CustomerSortOption.balanceAsc:
+        return 'balance_asc';
+    }
+  }
+}
+
+_CustomerSortOption _customerSortOptionFromStorage(String? value) {
+  for (final option in _CustomerSortOption.values) {
+    if (option.storageValue == value) return option;
+  }
+  return _CustomerSortOption.latestTransactionDesc;
+}
+
+List<Customer> _sortCustomers(
+  Iterable<Customer> customers,
+  Iterable<txn_model.Transaction> transactions, {
+  required _CustomerSortOption sortOption,
+  Map<int, double> balances = const {},
+}) {
+  final sortedCustomers = customers.toList();
+  final latestTransactionByCustomer = <int, DateTime>{};
+
+  for (final tx in transactions) {
+    final currentLatest = latestTransactionByCustomer[tx.customerId];
+    if (currentLatest == null || tx.date.isAfter(currentLatest)) {
+      latestTransactionByCustomer[tx.customerId] = tx.date;
+    }
+  }
+
+  sortedCustomers.sort((a, b) {
+    final latestA = latestTransactionByCustomer[a.id];
+    final latestB = latestTransactionByCustomer[b.id];
+    final balanceA = balances[a.id] ?? 0;
+    final balanceB = balances[b.id] ?? 0;
+    final lowerNameA = a.name.toLowerCase();
+    final lowerNameB = b.name.toLowerCase();
+
+    int compareLatestDesc() {
+      if (latestA != null && latestB != null) {
+        final dateComparison = latestB.compareTo(latestA);
+        if (dateComparison != 0) return dateComparison;
+      } else if (latestA != null) {
+        return -1;
+      } else if (latestB != null) {
+        return 1;
+      }
+      return 0;
+    }
+
+    int compareLatestAsc() {
+      if (latestA != null && latestB != null) {
+        final dateComparison = latestA.compareTo(latestB);
+        if (dateComparison != 0) return dateComparison;
+      } else if (latestA != null) {
+        return -1;
+      } else if (latestB != null) {
+        return 1;
+      }
+      return 0;
+    }
+
+    int compareNamesAsc() => lowerNameA.compareTo(lowerNameB);
+    int compareNamesDesc() => lowerNameB.compareTo(lowerNameA);
+
+    switch (sortOption) {
+      case _CustomerSortOption.latestTransactionDesc:
+        final latestComparison = compareLatestDesc();
+        if (latestComparison != 0) return latestComparison;
+        return compareNamesAsc();
+      case _CustomerSortOption.latestTransactionAsc:
+        final latestComparison = compareLatestAsc();
+        if (latestComparison != 0) return latestComparison;
+        return compareNamesAsc();
+      case _CustomerSortOption.nameAsc:
+        final nameComparison = compareNamesAsc();
+        if (nameComparison != 0) return nameComparison;
+        return compareLatestDesc();
+      case _CustomerSortOption.nameDesc:
+        final nameComparison = compareNamesDesc();
+        if (nameComparison != 0) return nameComparison;
+        return compareLatestDesc();
+      case _CustomerSortOption.balanceDesc:
+        final balanceComparison = balanceB.compareTo(balanceA);
+        if (balanceComparison != 0) return balanceComparison;
+        final latestComparison = compareLatestDesc();
+        if (latestComparison != 0) return latestComparison;
+        return compareNamesAsc();
+      case _CustomerSortOption.balanceAsc:
+        final balanceComparison = balanceA.compareTo(balanceB);
+        if (balanceComparison != 0) return balanceComparison;
+        final latestComparison = compareLatestDesc();
+        if (latestComparison != 0) return latestComparison;
+        return compareNamesAsc();
+    }
+  });
+
+  return sortedCustomers;
+}
+
+Map<int, double> _computeCustomerBalances(
+  Iterable<Customer> customers,
+  Iterable<txn_model.Transaction> transactions,
+) {
+  final customerIds = customers.map((customer) => customer.id).toSet();
+  final balances = <int, double>{for (final id in customerIds) id: 0};
+
+  for (final tx in transactions) {
+    if (!customerIds.contains(tx.customerId)) continue;
+
+    final amount = tx.amount;
+    if (tx.type == TransactionType.credit) {
+      balances[tx.customerId] = (balances[tx.customerId] ?? 0) + amount;
+    } else {
+      balances[tx.customerId] = (balances[tx.customerId] ?? 0) - amount;
+    }
+  }
+
+  return balances;
+}
+
 class HomeScreen extends StatefulWidget {
   final Isar isar;
   const HomeScreen({super.key, required this.isar});
@@ -30,15 +189,21 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
+  static const _customerSortPreferenceKey = 'home_customer_sort_option';
+
   Future<List<Customer>> _customersFuture = Future.value(const []);
   Map<int, double> _customerBalances = const {};
   Map<int, String> _customerPhotoPaths = const {};
   List<BusinessProfile> _profiles = [];
   int? _activeProfileId;
+  _CustomerSortOption _customerSortOption =
+      _CustomerSortOption.latestTransactionDesc;
   bool _isProfileLoading = true;
   bool _isProfileFlowBusy = false;
   Timer? _autoBackupCheckTimer;
   bool _autoBackupCheckInProgress = false;
+  double _homeAppBarSwipeDx = 0;
+  bool _homeAppBarSwipeTriggered = false;
   final List<OverlayEntry> _overlayEntries = [];
   final List<Timer> _overlayTimers = [];
 
@@ -136,6 +301,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _initializeProfilesAndCustomers() async {
+    final prefs = await SharedPreferences.getInstance();
+    _customerSortOption = _customerSortOptionFromStorage(
+      prefs.getString(_customerSortPreferenceKey),
+    );
+
     final activeProfileId = await ProfileRepository.ensureInitialized(
       widget.isar,
     );
@@ -154,10 +324,22 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     final customers = await widget.isar.customers
         .filter()
         .profileIdEqualTo(profileId)
-        .sortByName()
         .findAll();
 
-    final balances = await _computeBalances(profileId, customers);
+    final transactions = await widget.isar.transactions
+        .filter()
+        .profileIdEqualTo(profileId)
+        .isDeletedEqualTo(false)
+        .findAll();
+
+    final balances = _computeBalances(customers, transactions);
+
+    final sortedCustomers = _sortCustomers(
+      customers,
+      transactions,
+      sortOption: _customerSortOption,
+      balances: balances,
+    );
     final photoPaths = await _loadCustomerPhotoPaths(profileId, customers);
     if (mounted && _activeProfileId == profileId) {
       _setStateAfterFrame(() {
@@ -166,7 +348,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       });
     }
 
-    return customers;
+    return sortedCustomers;
   }
 
   String _customerPhotoKey(int profileId, int customerId) =>
@@ -187,35 +369,14 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     return result;
   }
 
-  Future<Map<int, double>> _computeBalances(
-    int profileId,
+  Map<int, double> _computeBalances(
     List<Customer> customers,
-  ) async {
+    List<txn_model.Transaction> transactions,
+  ) {
     if (customers.isEmpty) {
       return const {};
     }
-
-    final customerIds = customers.map((customer) => customer.id).toSet();
-    final balances = <int, double>{for (final id in customerIds) id: 0};
-
-    final transactions = await widget.isar.transactions
-        .filter()
-        .profileIdEqualTo(profileId)
-        .isDeletedEqualTo(false)
-        .findAll();
-
-    for (final tx in transactions) {
-      if (!customerIds.contains(tx.customerId)) continue;
-
-      final amount = tx.amount;
-      if (tx.type == TransactionType.credit) {
-        balances[tx.customerId] = (balances[tx.customerId] ?? 0) + amount;
-      } else {
-        balances[tx.customerId] = (balances[tx.customerId] ?? 0) - amount;
-      }
-    }
-
-    return balances;
+    return _computeCustomerBalances(customers, transactions);
   }
 
   Future<void> _refreshCustomers() async {
@@ -226,6 +387,76 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     setState(() {
       _customersFuture = Future.value(refreshed);
     });
+  }
+
+  Future<void> _updateCustomerSortOption(_CustomerSortOption option) async {
+    if (_customerSortOption == option) return;
+
+    final profileId = _activeProfileId;
+    setState(() {
+      _customerSortOption = option;
+      if (profileId != null) {
+        _customersFuture = _fetchCustomersForProfile(profileId);
+      }
+    });
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_customerSortPreferenceKey, option.storageValue);
+  }
+
+  Future<void> _showCustomerSortSheet() async {
+    final selectedOption = await showModalBottomSheet<_CustomerSortOption>(
+      context: context,
+      useSafeArea: true,
+      isScrollControlled: true,
+      builder: (sheetContext) {
+        final theme = Theme.of(sheetContext);
+        return SafeArea(
+          child: SingleChildScrollView(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Sort customers',
+                    style: theme.textTheme.titleLarge,
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    'Choose how customer cards are ordered.',
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  for (final option in _CustomerSortOption.values)
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      visualDensity: VisualDensity.compact,
+                      leading: Icon(
+                        option == _customerSortOption
+                            ? Icons.radio_button_checked
+                            : Icons.radio_button_off,
+                        color: option == _customerSortOption
+                            ? theme.colorScheme.primary
+                            : theme.colorScheme.onSurfaceVariant,
+                      ),
+                      title: Text(option.label),
+                      onTap: () => Navigator.pop(sheetContext, option),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+
+    if (selectedOption != null) {
+      await _updateCustomerSortOption(selectedOption);
+    }
   }
 
   Future<void> _deleteCustomer(Customer customer) async {
@@ -298,7 +529,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     bool isCheckingName = false;
     int validationRequestId = 0;
 
-    final didSave = await showModalBottomSheet<bool>(
+    final result = await showModalBottomSheet<_EditCustomerSheetAction>(
       context: context,
       isScrollControlled: true,
       useSafeArea: true,
@@ -404,7 +635,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                           Expanded(
                             child: TextButton(
                               onPressed: () =>
-                                  Navigator.pop(sheetContext, false),
+                                  Navigator.pop(
+                                    sheetContext,
+                                    _EditCustomerSheetAction.cancel,
+                                  ),
                               child: const Text('Cancel'),
                             ),
                           ),
@@ -420,7 +654,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                                       if (nameError != null || isCheckingName) {
                                         return;
                                       }
-                                      Navigator.pop(sheetContext, true);
+                                      Navigator.pop(
+                                        sheetContext,
+                                        _EditCustomerSheetAction.save,
+                                      );
                                     }
                                   : null,
                               child: const Text('Save'),
@@ -447,7 +684,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       } catch (_) {}
     });
 
-    if (didSave != true || updatedName.isEmpty) return;
+    if (result == null || result == _EditCustomerSheetAction.cancel) return;
+
+    if (updatedName.isEmpty) return;
 
     await widget.isar.writeTxn(() async {
       customer.name = _normalizeCustomerName(updatedName);
@@ -663,7 +902,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   Future<void> _switchProfile(int profileId) async {
     await ProfileRepository.setActiveProfile(widget.isar, profileId);
     if (!mounted) return;
-    _setStateAfterFrame(() {
+    setState(() {
       _activeProfileId = profileId;
       _customersFuture = _fetchCustomersForProfile(profileId);
     });
@@ -704,38 +943,460 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   void _onHomeAppBarHorizontalSwipe(DragEndDetails details) {
+    if (_homeAppBarSwipeTriggered) {
+      _homeAppBarSwipeDx = 0;
+      _homeAppBarSwipeTriggered = false;
+      return;
+    }
+
     final velocity = details.primaryVelocity ?? 0;
-    if (velocity.abs() < 150) return;
-    if (velocity < 0) {
+    if (velocity.abs() >= 150) {
+      if (velocity < 0) {
+        _switchAdjacentProfile(next: true);
+      } else {
+        _switchAdjacentProfile(next: false);
+      }
+    }
+
+    _homeAppBarSwipeDx = 0;
+    _homeAppBarSwipeTriggered = false;
+  }
+
+  void _onHomeAppBarHorizontalSwipeStart(DragStartDetails details) {
+    _homeAppBarSwipeDx = 0;
+    _homeAppBarSwipeTriggered = false;
+  }
+
+  void _onHomeAppBarHorizontalSwipeUpdate(DragUpdateDetails details) {
+    if (_homeAppBarSwipeTriggered) return;
+
+    _homeAppBarSwipeDx += details.primaryDelta ?? 0;
+    if (_homeAppBarSwipeDx.abs() < 28) return;
+
+    _homeAppBarSwipeTriggered = true;
+    if (_homeAppBarSwipeDx < 0) {
       _switchAdjacentProfile(next: true);
     } else {
       _switchAdjacentProfile(next: false);
     }
   }
 
-  Future<void> _createProfile(String profileName) async {
-    if (profileName.trim().isEmpty) return;
+  void _onHomeAppBarHorizontalSwipeCancel() {
+    _homeAppBarSwipeDx = 0;
+    _homeAppBarSwipeTriggered = false;
+  }
+
+  Future<BusinessProfile?> _createProfile(
+    String profileName, {
+    bool setActive = true,
+  }) async {
+    if (profileName.trim().isEmpty) return null;
 
     try {
       final profile = await ProfileRepository.createProfile(
         widget.isar,
         profileName,
+        setActive: setActive,
       );
       final profiles = await ProfileRepository.getProfiles(widget.isar);
 
-      if (!mounted) return;
+      if (!mounted) return null;
       _setStateAfterFrame(() {
         _profiles = profiles;
-        _activeProfileId = profile.id;
-        _customersFuture = _fetchCustomersForProfile(profile.id);
+        if (setActive) {
+          _activeProfileId = profile.id;
+          _customersFuture = _fetchCustomersForProfile(profile.id);
+        }
       });
-    } on StateError {
-      if (!mounted) return;
+      return profile;
+    } on StateError catch (error) {
+      if (!mounted) return null;
       _showTopToast(
-        'Cannot delete the last profile',
+        error.message.isNotEmpty
+            ? error.message
+            : 'Could not create profile.',
         color: const Color(0xFFDC2626),
         icon: Icons.warning_amber_rounded,
       );
+    }
+    return null;
+  }
+
+  Future<String?> _promptForProfileName({
+    required String title,
+    required String actionLabel,
+  }) async {
+    final controller = TextEditingController();
+    String? errorText;
+
+    final profileName = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) => AlertDialog(
+          title: Text(title),
+          content: TextField(
+            controller: controller,
+            autofocus: true,
+            decoration: InputDecoration(
+              labelText: 'Business name',
+              errorText: errorText,
+            ),
+            onChanged: (_) {
+              if (errorText != null) {
+                setDialogState(() => errorText = null);
+              }
+            },
+            onSubmitted: (value) {
+              final name = value.trim();
+              if (name.isEmpty) {
+                setDialogState(() => errorText = 'Business name is required');
+                return;
+              }
+              Navigator.pop(dialogContext, name);
+            },
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () {
+                final name = controller.text.trim();
+                if (name.isEmpty) {
+                  setDialogState(
+                    () => errorText = 'Business name is required',
+                  );
+                  return;
+                }
+                Navigator.pop(dialogContext, name);
+              },
+              child: Text(actionLabel),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    Future.delayed(const Duration(milliseconds: 350), () {
+      try {
+        controller.dispose();
+      } catch (_) {}
+    });
+
+    return profileName;
+  }
+
+  Future<String?> _resolveCustomerMoveName({
+    required String initialName,
+    required BusinessProfile targetProfile,
+  }) async {
+    var proposedName = _normalizeCustomerName(initialName);
+    if (proposedName.isEmpty) return null;
+
+    final hasDuplicate = await _isDuplicateCustomerName(
+      profileId: targetProfile.id,
+      name: proposedName,
+    );
+    if (!hasDuplicate) {
+      return proposedName;
+    }
+
+    if (!mounted) return null;
+
+    final controller = TextEditingController(text: '$proposedName (${targetProfile.name})');
+    String? errorText;
+
+    final resolvedName = await showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) => AlertDialog(
+          title: const Text('Customer name already exists'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'A customer with this name already exists in ${targetProfile.name}. Enter a different name to move this customer.',
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: controller,
+                autofocus: true,
+                decoration: InputDecoration(
+                  labelText: 'Customer name',
+                  errorText: errorText,
+                ),
+                onChanged: (_) {
+                  if (errorText != null) {
+                    setDialogState(() => errorText = null);
+                  }
+                },
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () async {
+                final nextName = _normalizeCustomerName(controller.text);
+                if (nextName.isEmpty) {
+                  setDialogState(() => errorText = 'Customer name is required');
+                  return;
+                }
+
+                final duplicate = await _isDuplicateCustomerName(
+                  profileId: targetProfile.id,
+                  name: nextName,
+                );
+                if (!dialogContext.mounted) return;
+                if (duplicate) {
+                  setDialogState(
+                    () => errorText = 'This name already exists in the selected profile',
+                  );
+                  return;
+                }
+
+                Navigator.pop(dialogContext, nextName);
+              },
+              child: const Text('Continue'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    Future.delayed(const Duration(milliseconds: 350), () {
+      try {
+        controller.dispose();
+      } catch (_) {}
+    });
+
+    return resolvedName;
+  }
+
+  Future<BusinessProfile?> _pickTargetProfileForCustomerMove(
+    Customer customer,
+  ) async {
+    final profiles = await ProfileRepository.getProfiles(widget.isar);
+    final availableProfiles = profiles
+        .where((profile) => profile.id != customer.profileId)
+        .toList();
+
+    if (!mounted) return null;
+
+    if (availableProfiles.isEmpty) {
+      final shouldCreate = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('No other profile found'),
+          content: const Text(
+            'Create a new business profile to move this customer.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('Create profile'),
+            ),
+          ],
+        ),
+      );
+
+      if (shouldCreate != true) return null;
+
+      final name = await _promptForProfileName(
+        title: 'Create profile',
+        actionLabel: 'Create',
+      );
+      if (name == null || name.trim().isEmpty) return null;
+      return _createProfile(name, setActive: false);
+    }
+
+    final selection = await showModalBottomSheet<String>(
+      context: context,
+      useSafeArea: true,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (final profile in availableProfiles)
+              ListTile(
+                leading: const Icon(Icons.business_outlined),
+                title: Text(profile.name),
+                onTap: () => Navigator.pop(
+                  sheetContext,
+                  profile.id.toString(),
+                ),
+              ),
+            const Divider(height: 1),
+            ListTile(
+              leading: const Icon(Icons.add_circle_outline_rounded),
+              title: const Text('Create new profile'),
+              onTap: () => Navigator.pop(sheetContext, 'create'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (!mounted || selection == null) return null;
+    if (selection == 'create') {
+      final name = await _promptForProfileName(
+        title: 'Create profile',
+        actionLabel: 'Create',
+      );
+      if (name == null || name.trim().isEmpty) return null;
+      return _createProfile(name, setActive: false);
+    }
+
+    final selectedId = int.tryParse(selection);
+    if (selectedId == null) return null;
+    return profiles.where((profile) => profile.id == selectedId).firstOrNull;
+  }
+
+  Future<void> _moveCustomerToDifferentProfile(
+    Customer customer, {
+    required String draftName,
+    required String draftPhone,
+  }) async {
+    final targetProfile = await _pickTargetProfileForCustomerMove(customer);
+    if (!mounted || targetProfile == null) return;
+
+    final resolvedName = await _resolveCustomerMoveName(
+      initialName: draftName,
+      targetProfile: targetProfile,
+    );
+    if (!mounted || resolvedName == null) return;
+
+    final shouldMove = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Move customer'),
+        content: Text(
+          'Move "$resolvedName" to ${targetProfile.name}? All transactions will move with this customer.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Move'),
+          ),
+        ],
+      ),
+    );
+
+    if (shouldMove != true) return;
+
+    final oldProfileId = customer.profileId;
+    final photoPath = _customerPhotoPaths[customer.id];
+    final relatedTransactions = await widget.isar.transactions
+        .filter()
+        .profileIdEqualTo(customer.profileId)
+        .customerIdEqualTo(customer.id)
+        .findAll();
+    final now = DateTime.now();
+
+    await widget.isar.writeTxn(() async {
+      customer.profileId = targetProfile.id;
+      customer.name = resolvedName;
+      customer.phone = draftPhone.trim().isEmpty ? null : draftPhone.trim();
+      customer.updatedAt = now;
+      await widget.isar.customers.put(customer);
+
+      for (final transaction in relatedTransactions) {
+        transaction.profileId = targetProfile.id;
+        transaction.updatedAt = now;
+      }
+      if (relatedTransactions.isNotEmpty) {
+        await widget.isar.transactions.putAll(relatedTransactions);
+      }
+    });
+
+    final prefs = await SharedPreferences.getInstance();
+    final oldPhotoKey = _customerPhotoKey(oldProfileId, customer.id);
+    final newPhotoKey = _customerPhotoKey(targetProfile.id, customer.id);
+    if (photoPath != null && photoPath.trim().isNotEmpty) {
+      await prefs.setString(newPhotoKey, photoPath);
+      if (oldPhotoKey != newPhotoKey) {
+        await prefs.remove(oldPhotoKey);
+      }
+    }
+
+    if (!mounted) return;
+    _showTopToast(
+      'Moved ${customer.name} to ${targetProfile.name}',
+      color: const Color(0xFF16A34A),
+      icon: Icons.move_down_rounded,
+    );
+    await _refreshCustomers();
+  }
+
+  Future<void> _showCustomerQuickActions(Customer customer) async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      useSafeArea: true,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.edit_outlined),
+              title: const Text('Edit customer'),
+              onTap: () => Navigator.pop(sheetContext, 'edit'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.drive_file_move_outline),
+              title: const Text('Move to another profile'),
+              onTap: () => Navigator.pop(sheetContext, 'move'),
+            ),
+            ListTile(
+              leading: Icon(
+                Icons.delete_outline,
+                color: Theme.of(sheetContext).colorScheme.error,
+              ),
+              title: Text(
+                'Delete customer',
+                style: TextStyle(
+                  color: Theme.of(sheetContext).colorScheme.error,
+                ),
+              ),
+              onTap: () => Navigator.pop(sheetContext, 'delete'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (!mounted || action == null) return;
+
+    switch (action) {
+      case 'edit':
+        await _showEditCustomerDialog(customer);
+        break;
+      case 'move':
+        await _moveCustomerToDifferentProfile(
+          customer,
+          draftName: customer.name,
+          draftPhone: customer.phone ?? '',
+        );
+        break;
+      case 'delete':
+        final shouldDelete = await _confirmDeleteCustomer(customer);
+        if (shouldDelete) {
+          await _deleteCustomer(customer);
+        }
+        break;
     }
   }
 
@@ -891,11 +1552,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         return StatefulBuilder(
           builder: (sheetContext, setSheetState) {
             final bottomInset = MediaQuery.of(sheetContext).viewInsets.bottom;
-            final appBarBg =
-                Theme.of(sheetContext).appBarTheme.backgroundColor ??
-                Theme.of(
-                  sheetContext,
-                ).colorScheme.primary.withAlpha((0.22 * 255).round());
+            final theme = Theme.of(sheetContext);
+            final colorScheme = theme.colorScheme;
+            final dividerColor = colorScheme.outlineVariant.withAlpha(140);
 
             return GestureDetector(
               behavior: HitTestBehavior.opaque,
@@ -905,166 +1564,300 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                 curve: Curves.easeOut,
                 padding: EdgeInsets.only(bottom: bottomInset),
                 child: SingleChildScrollView(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      ListTile(
-                        dense: true,
-                        visualDensity: const VisualDensity(vertical: -2),
-                        tileColor: appBarBg,
-                        title: const Center(
-                          child: Text(
-                            'Business Profiles',
-                            style: TextStyle(
-                              fontSize: 17,
-                              fontWeight: FontWeight.w700,
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 10, 16, 16),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Center(
+                          child: Container(
+                            width: 42,
+                            height: 4,
+                            decoration: BoxDecoration(
+                              color: colorScheme.outlineVariant,
+                              borderRadius: BorderRadius.circular(999),
                             ),
                           ),
                         ),
-                      ),
-                      Divider(
-                        height: 1,
-                        color: Theme.of(
-                          sheetContext,
-                        ).colorScheme.outlineVariant.withAlpha(160),
-                      ),
-                      ..._profiles.asMap().entries.expand((entry) {
-                        final index = entry.key;
-                        final profile = entry.value;
-                        return [
-                          ListTile(
-                            tileColor: profile.id == _activeProfileId
-                                ? appBarBg
-                                : Theme.of(sheetContext)
-                                      .colorScheme
-                                      .surfaceContainerHighest
-                                      .withAlpha((0.32 * 255).round()),
-                            title: Text(profile.name),
-                            trailing: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                if (profile.id == _activeProfileId)
-                                  const Padding(
-                                    padding: EdgeInsets.only(right: 4),
-                                    child: Icon(Icons.check),
-                                  ),
-                                IconButton(
-                                  icon: const Icon(Icons.more_vert),
-                                  onPressed: () {
-                                    Navigator.pop(
-                                      sheetContext,
-                                      _ProfileSheetAction(
-                                        type: _ProfileSheetActionType
-                                            .profileActions,
-                                        profileId: profile.id,
+                        const SizedBox(height: 16),
+                        Text(
+                          'Business Profiles',
+                          style: theme.textTheme.titleLarge?.copyWith(
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          'Switch, create, rename, or delete profiles.',
+                          style: theme.textTheme.bodyMedium?.copyWith(
+                            color: colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        Container(
+                          decoration: BoxDecoration(
+                            color: colorScheme.surfaceContainerLow,
+                            borderRadius: BorderRadius.circular(18),
+                            border: Border.all(color: dividerColor),
+                          ),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              for (final entry in _profiles.asMap().entries) ...[
+                                Builder(
+                                  builder: (_) {
+                                    final profile = entry.value;
+                                    final isActive =
+                                        profile.id == _activeProfileId;
+                                    final tileColor = isActive
+                                        ? colorScheme.primaryContainer
+                                        : Colors.transparent;
+                                    final titleColor = isActive
+                                        ? colorScheme.onPrimaryContainer
+                                        : colorScheme.onSurface;
+                                    final subtitleColor = isActive
+                                        ? colorScheme.onPrimaryContainer
+                                              .withAlpha(190)
+                                        : colorScheme.onSurfaceVariant;
+
+                                    return Material(
+                                      color: tileColor,
+                                      borderRadius: BorderRadius.circular(16),
+                                      child: InkWell(
+                                        borderRadius: BorderRadius.circular(16),
+                                        onTap: () {
+                                          Navigator.pop(
+                                            sheetContext,
+                                            _ProfileSheetAction(
+                                              type: _ProfileSheetActionType
+                                                  .switchProfile,
+                                              profileId: profile.id,
+                                            ),
+                                          );
+                                        },
+                                        child: Padding(
+                                          padding: const EdgeInsets.fromLTRB(
+                                            14,
+                                            10,
+                                            10,
+                                            10,
+                                          ),
+                                          child: Row(
+                                            children: [
+                                              Container(
+                                                width: 34,
+                                                height: 34,
+                                                decoration: BoxDecoration(
+                                                  color: isActive
+                                                      ? colorScheme.primary
+                                                            .withAlpha(32)
+                                                      : colorScheme
+                                                            .surfaceContainerHighest,
+                                                  borderRadius:
+                                                      BorderRadius.circular(12),
+                                                ),
+                                                alignment: Alignment.center,
+                                                child: Icon(
+                                                  Icons.business_rounded,
+                                                  size: 18,
+                                                  color: isActive
+                                                      ? colorScheme.primary
+                                                      : colorScheme
+                                                            .onSurfaceVariant,
+                                                ),
+                                              ),
+                                              const SizedBox(width: 10),
+                                              Expanded(
+                                                child: Column(
+                                                  crossAxisAlignment:
+                                                      CrossAxisAlignment.start,
+                                                  mainAxisSize:
+                                                      MainAxisSize.min,
+                                                  children: [
+                                                    Text(
+                                                      profile.name,
+                                                      maxLines: 1,
+                                                      overflow:
+                                                          TextOverflow.ellipsis,
+                                                      style: theme
+                                                          .textTheme
+                                                          .bodyLarge
+                                                          ?.copyWith(
+                                                            color: titleColor,
+                                                            fontWeight:
+                                                                FontWeight.w700,
+                                                          ),
+                                                    ),
+                                                    Text(
+                                                      isActive
+                                                          ? 'Active profile'
+                                                          : 'Tap to switch',
+                                                      style: theme
+                                                          .textTheme
+                                                          .bodySmall
+                                                          ?.copyWith(
+                                                            color:
+                                                                subtitleColor,
+                                                          ),
+                                                    ),
+                                                  ],
+                                                ),
+                                              ),
+                                              if (isActive)
+                                                Padding(
+                                                  padding:
+                                                      const EdgeInsets.only(
+                                                        right: 2,
+                                                      ),
+                                                  child: Icon(
+                                                    Icons.check_circle_rounded,
+                                                    size: 18,
+                                                    color:
+                                                        colorScheme.primary,
+                                                  ),
+                                                ),
+                                              IconButton(
+                                                style: IconButton.styleFrom(
+                                                  visualDensity:
+                                                      VisualDensity.compact,
+                                                  padding: EdgeInsets.zero,
+                                                  minimumSize: const Size(
+                                                    34,
+                                                    34,
+                                                  ),
+                                                  backgroundColor: isActive
+                                                      ? colorScheme.surface
+                                                            .withAlpha(120)
+                                                      : colorScheme
+                                                            .surfaceContainerHighest,
+                                                ),
+                                                icon: const Icon(
+                                                  Icons.more_horiz_rounded,
+                                                  size: 18,
+                                                ),
+                                                onPressed: () {
+                                                  Navigator.pop(
+                                                    sheetContext,
+                                                    _ProfileSheetAction(
+                                                      type:
+                                                          _ProfileSheetActionType
+                                                              .profileActions,
+                                                      profileId: profile.id,
+                                                    ),
+                                                  );
+                                                },
+                                              ),
+                                            ],
+                                          ),
+                                        ),
                                       ),
                                     );
                                   },
                                 ),
+                                if (entry.key != _profiles.length - 1)
+                                  Divider(height: 1, color: dividerColor),
                               ],
-                            ),
-                            onTap: () {
-                              Navigator.pop(
-                                sheetContext,
-                                _ProfileSheetAction(
-                                  type: _ProfileSheetActionType.switchProfile,
-                                  profileId: profile.id,
-                                ),
-                              );
-                            },
-                          ),
-                          if (index != _profiles.length - 1)
-                            Divider(
-                              height: 1,
-                              color: Theme.of(
-                                sheetContext,
-                              ).colorScheme.outlineVariant.withAlpha(160),
-                            ),
-                        ];
-                      }),
-                      if (!showCreateInput)
-                        Divider(
-                          height: 1,
-                          color: Theme.of(
-                            sheetContext,
-                          ).colorScheme.outlineVariant.withAlpha(160),
-                        ),
-                      if (!showCreateInput)
-                        ListTile(
-                          tileColor: appBarBg,
-                          leading: const Icon(Icons.add_circle_outline_rounded),
-                          title: const Text('Create new profile'),
-                          onTap: () {
-                            setSheetState(() => showCreateInput = true);
-                          },
-                        )
-                      else
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              TextField(
-                                controller: createNameController,
-                                autofocus: true,
-                                decoration: const InputDecoration(
-                                  labelText: 'Business name',
-                                ),
-                                onSubmitted: (value) {
-                                  final name = value.trim();
-                                  if (name.isEmpty) return;
-                                  FocusScope.of(sheetContext).unfocus();
-                                  Navigator.pop(
-                                    sheetContext,
-                                    _ProfileSheetAction(
-                                      type:
-                                          _ProfileSheetActionType.createProfile,
-                                      profileName: name,
-                                    ),
-                                  );
-                                },
-                              ),
-                              const SizedBox(height: 12),
-                              Row(
-                                children: [
-                                  Expanded(
-                                    child: TextButton(
-                                      onPressed: () {
-                                        FocusScope.of(sheetContext).unfocus();
-                                        createNameController.clear();
-                                        setSheetState(
-                                          () => showCreateInput = false,
-                                        );
-                                      },
-                                      child: const Text('Cancel'),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  Expanded(
-                                    child: FilledButton(
-                                      onPressed: () {
-                                        final name = createNameController.text
-                                            .trim();
-                                        if (name.isEmpty) return;
-                                        FocusScope.of(sheetContext).unfocus();
-                                        Navigator.pop(
-                                          sheetContext,
-                                          _ProfileSheetAction(
-                                            type: _ProfileSheetActionType
-                                                .createProfile,
-                                            profileName: name,
-                                          ),
-                                        );
-                                      },
-                                      child: const Text('Create'),
-                                    ),
-                                  ),
-                                ],
-                              ),
                             ],
                           ),
                         ),
-                    ],
+                        const SizedBox(height: 14),
+                        if (!showCreateInput)
+                          SizedBox(
+                            width: double.infinity,
+                            child: FilledButton.icon(
+                              onPressed: () {
+                                setSheetState(() => showCreateInput = true);
+                              },
+                              icon: const Icon(
+                                Icons.add_circle_outline_rounded,
+                              ),
+                              label: const Text('Create new profile'),
+                            ),
+                          )
+                        else
+                          Container(
+                            padding: const EdgeInsets.fromLTRB(14, 14, 14, 14),
+                            decoration: BoxDecoration(
+                              color: colorScheme.surfaceContainerLow,
+                              borderRadius: BorderRadius.circular(20),
+                              border: Border.all(color: dividerColor),
+                            ),
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'Create business profile',
+                                  style: theme.textTheme.titleMedium?.copyWith(
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                                const SizedBox(height: 12),
+                                TextField(
+                                  controller: createNameController,
+                                  autofocus: true,
+                                  decoration: const InputDecoration(
+                                    labelText: 'Business name',
+                                  ),
+                                  onSubmitted: (value) {
+                                    final name = value.trim();
+                                    if (name.isEmpty) return;
+                                    FocusScope.of(sheetContext).unfocus();
+                                    Navigator.pop(
+                                      sheetContext,
+                                      _ProfileSheetAction(
+                                        type:
+                                            _ProfileSheetActionType.createProfile,
+                                        profileName: name,
+                                      ),
+                                    );
+                                  },
+                                ),
+                                const SizedBox(height: 12),
+                                Row(
+                                  children: [
+                                    Expanded(
+                                      child: OutlinedButton(
+                                        onPressed: () {
+                                          FocusScope.of(sheetContext)
+                                              .unfocus();
+                                          createNameController.clear();
+                                          setSheetState(
+                                            () => showCreateInput = false,
+                                          );
+                                        },
+                                        child: const Text('Cancel'),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Expanded(
+                                      child: FilledButton(
+                                        onPressed: () {
+                                          final name = createNameController.text
+                                              .trim();
+                                          if (name.isEmpty) return;
+                                          FocusScope.of(sheetContext)
+                                              .unfocus();
+                                          Navigator.pop(
+                                            sheetContext,
+                                            _ProfileSheetAction(
+                                              type: _ProfileSheetActionType
+                                                  .createProfile,
+                                              profileName: name,
+                                            ),
+                                          );
+                                        },
+                                        child: const Text('Create'),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            ),
+                          ),
+                      ],
+                    ),
                   ),
                 ),
               ),
@@ -1118,94 +1911,112 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
     return Scaffold(
       backgroundColor: Theme.of(context).scaffoldBackgroundColor,
-      appBar: AppBar(
-        centerTitle: false,
-        flexibleSpace: GestureDetector(
+      appBar: PreferredSize(
+        preferredSize: const Size.fromHeight(kToolbarHeight),
+        child: GestureDetector(
           behavior: HitTestBehavior.translucent,
+          onHorizontalDragStart: _onHomeAppBarHorizontalSwipeStart,
+          onHorizontalDragUpdate: _onHomeAppBarHorizontalSwipeUpdate,
           onHorizontalDragEnd: _onHomeAppBarHorizontalSwipe,
-          child: const SizedBox.expand(),
-        ),
-        title: Row(
-          children: [
-            const AppLogo(height: 24),
-            const SizedBox(width: 10),
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
+          onHorizontalDragCancel: _onHomeAppBarHorizontalSwipeCancel,
+          child: AppBar(
+            centerTitle: false,
+            title: Row(
               children: [
-                const Text('My Ledger'),
-                if (profileName != null)
-                  InkWell(
-                    onTap: _isProfileLoading ? null : _openProfileSheet,
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(
-                          profileName,
-                          style: Theme.of(context).textTheme.bodySmall
-                              ?.copyWith(
-                                color: Theme.of(context).colorScheme.primary,
-                                fontWeight: FontWeight.w600,
+                const AppLogo(height: 24),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Text(
+                        'My Ledger',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      if (profileName != null)
+                        InkWell(
+                          onTap: _isProfileLoading ? null : _openProfileSheet,
+                          child: Row(
+                            mainAxisSize: MainAxisSize.max,
+                            children: [
+                              Flexible(
+                                child: Text(
+                                  profileName,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: Theme.of(context).textTheme.bodySmall
+                                      ?.copyWith(
+                                        color: Theme.of(
+                                          context,
+                                        ).colorScheme.primary,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                ),
                               ),
+                              const SizedBox(width: 2),
+                              Icon(
+                                Icons.arrow_drop_down,
+                                size: 18,
+                                color: Theme.of(context).colorScheme.primary,
+                              ),
+                            ],
+                          ),
                         ),
-                        const SizedBox(width: 2),
-                        Icon(
-                          Icons.arrow_drop_down,
-                          size: 18,
-                          color: Theme.of(context).colorScheme.primary,
-                        ),
-                      ],
-                    ),
+                    ],
                   ),
+                ),
               ],
             ),
-          ],
+            actions: [
+              IconButton(
+                icon: const Icon(Icons.search),
+                onPressed: () async {
+                  final profileId = _activeProfileId;
+                  if (profileId == null) return;
+                  await Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => _HomeCustomerSearchPage(
+                        isar: widget.isar,
+                        profileId: profileId,
+                        profileName: profileName,
+                        sortOption: _customerSortOption,
+                      ),
+                    ),
+                  );
+                  if (!mounted) return;
+                  await _refreshCustomers();
+                },
+              ),
+              IconButton(
+                icon: const Icon(Icons.bar_chart),
+                onPressed: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => AnalyticsScreen(isar: widget.isar),
+                    ),
+                  );
+                },
+              ),
+              IconButton(
+                icon: const Icon(Icons.menu),
+                onPressed: () async {
+                  await Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => MenuScreen(isar: widget.isar),
+                    ),
+                  );
+                  if (!mounted) return;
+                  await _initializeProfilesAndCustomers();
+                },
+              ),
+            ],
+          ),
         ),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.search),
-            onPressed: () async {
-              final profileId = _activeProfileId;
-              if (profileId == null) return;
-              await Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => _HomeCustomerSearchPage(
-                    isar: widget.isar,
-                    profileId: profileId,
-                    profileName: profileName,
-                  ),
-                ),
-              );
-              if (!mounted) return;
-              await _refreshCustomers();
-            },
-          ),
-          IconButton(
-            icon: const Icon(Icons.bar_chart),
-            onPressed: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => AnalyticsScreen(isar: widget.isar),
-                ),
-              );
-            },
-          ),
-          IconButton(
-            icon: const Icon(Icons.menu),
-            onPressed: () async {
-              await Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => MenuScreen(isar: widget.isar),
-                ),
-              );
-              if (!mounted) return;
-              await _initializeProfilesAndCustomers();
-            },
-          ),
-        ],
       ),
       body: _isProfileLoading
           ? const Center(child: CircularProgressIndicator())
@@ -1230,193 +2041,216 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
                 return RefreshIndicator(
                   onRefresh: _refreshCustomers,
-                  child: ListView.builder(
-                    padding: const EdgeInsets.symmetric(
-                      vertical: 8,
-                      horizontal: 6,
-                    ),
-                    itemCount: customers.length,
-                    itemBuilder: (context, index) {
-                      final customer = customers[index];
-                      final balance = _customerBalances[customer.id] ?? 0;
-                      final absBalance = balance.abs();
-                      final balanceText = absBalance == absBalance.toInt()
-                          ? absBalance.toInt().toString()
-                          : absBalance.toStringAsFixed(2);
-                      final initials = customer.name.trim().isEmpty
-                          ? '?'
-                          : customer.name
-                                .trim()
-                                .split(' ')
-                                .map((e) => e.isNotEmpty ? e[0] : '')
-                                .take(2)
-                                .join();
+                  child: Column(
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(6, 2, 6, 0),
+                        child: Align(
+                          alignment: Alignment.centerRight,
+                          child: OutlinedButton.icon(
+                            onPressed: _showCustomerSortSheet,
+                            icon: const Icon(Icons.sort, size: 18),
+                            label: Text(_customerSortOption.label),
+                            style: OutlinedButton.styleFrom(
+                              visualDensity: VisualDensity.compact,
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                                vertical: 6,
+                              ),
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            ),
+                          ),
+                        ),
+                      ),
+                      Expanded(
+                        child: ListView.builder(
+                          padding: const EdgeInsets.fromLTRB(
+                            6,
+                            0,
+                            6,
+                            8,
+                          ),
+                          itemCount: customers.length,
+                          itemBuilder: (context, index) {
+                            final customer = customers[index];
+                            final balance = _customerBalances[customer.id] ?? 0;
+                            final absBalance = balance.abs();
+                            final balanceText = absBalance == absBalance.toInt()
+                                ? absBalance.toInt().toString()
+                                : absBalance.toStringAsFixed(2);
+                            final initials = customer.name.trim().isEmpty
+                                ? '?'
+                                : customer.name
+                                      .trim()
+                                      .split(' ')
+                                      .map((e) => e.isNotEmpty ? e[0] : '')
+                                      .take(2)
+                                      .join();
 
-                      return Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Dismissible(
-                            key: ValueKey(
-                              '${customer.id}-${customer.updatedAt.millisecondsSinceEpoch}',
-                            ),
-                            direction: DismissDirection.horizontal,
-                            background: Container(
-                              decoration: BoxDecoration(
-                                color: Colors.blue.shade700,
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                              alignment: Alignment.centerLeft,
-                              padding: const EdgeInsets.only(left: 20),
-                              child: const Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Icon(
-                                    Icons.edit_outlined,
-                                    color: Colors.white,
+                            return Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Dismissible(
+                                  key: ValueKey(
+                                    '${customer.id}-${customer.updatedAt.millisecondsSinceEpoch}',
                                   ),
-                                  SizedBox(width: 8),
-                                  Text(
-                                    'Edit',
-                                    style: TextStyle(
-                                      color: Colors.white,
-                                      fontWeight: FontWeight.w600,
+                                  direction: DismissDirection.horizontal,
+                                  background: Container(
+                                    decoration: BoxDecoration(
+                                      color: Colors.blue.shade700,
+                                      borderRadius: BorderRadius.circular(12),
                                     ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                            secondaryBackground: Container(
-                              decoration: BoxDecoration(
-                                color: Theme.of(context).colorScheme.error,
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                              alignment: Alignment.centerRight,
-                              padding: const EdgeInsets.only(right: 20),
-                              child: const Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Text(
-                                    'Delete',
-                                    style: TextStyle(
-                                      color: Colors.white,
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                  ),
-                                  SizedBox(width: 8),
-                                  Icon(
-                                    Icons.delete_outline,
-                                    color: Colors.white,
-                                  ),
-                                ],
-                              ),
-                            ),
-                            confirmDismiss: (direction) async {
-                              if (direction == DismissDirection.startToEnd) {
-                                final shouldEdit = await _confirmEditCustomer(
-                                  customer,
-                                );
-                                if (shouldEdit) {
-                                  Future.microtask(() async {
-                                    if (!mounted) return;
-                                    await _showEditCustomerDialog(customer);
-                                  });
-                                }
-                                return false;
-                              }
-                              return _confirmDeleteCustomer(customer);
-                            },
-                            onDismissed: (direction) async {
-                              if (direction != DismissDirection.endToStart) {
-                                return;
-                              }
-                              await _deleteCustomer(customer);
-                              if (!mounted) return;
-                            },
-                            child: Card(
-                              elevation: 0,
-                              color: Colors.transparent,
-                              surfaceTintColor: Colors.transparent,
-                              clipBehavior: Clip.antiAlias,
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(14),
-                              ),
-                              child: InkWell(
-                                borderRadius: BorderRadius.circular(14),
-                                onTap: () async {
-                                  final seedTxs = await widget.isar.transactions
-                                      .filter()
-                                      .profileIdEqualTo(customer.profileId)
-                                      .customerIdEqualTo(customer.id)
-                                      .findAll();
-                                  seedTxs.sort(
-                                    (a, b) => a.date.compareTo(b.date),
-                                  );
-                                  if (!context.mounted) return;
-
-                                  Navigator.push(
-                                    context,
-                                    PageRouteBuilder(
-                                      transitionDuration: Duration.zero,
-                                      reverseTransitionDuration: Duration.zero,
-                                      pageBuilder: (_, _, _) =>
-                                          CustomerLedgerScreen(
-                                            isar: widget.isar,
-                                            customerId: customer.id,
-                                            customerName: customer.name,
-                                            profileId: customer.profileId,
-                                            customerPhotoPath:
-                                                _customerPhotoPaths[customer
-                                                    .id],
-                                            initialTransactions: seedTxs,
+                                    alignment: Alignment.centerLeft,
+                                    padding: const EdgeInsets.only(left: 20),
+                                    child: const Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(
+                                          Icons.edit_outlined,
+                                          color: Colors.white,
+                                        ),
+                                        SizedBox(width: 8),
+                                        Text(
+                                          'Edit',
+                                          style: TextStyle(
+                                            color: Colors.white,
+                                            fontWeight: FontWeight.w600,
                                           ),
-                                      transitionsBuilder:
-                                          (
-                                            context,
-                                            animation,
-                                            secondaryAnimation,
-                                            child,
-                                          ) => child,
+                                        ),
+                                      ],
                                     ),
-                                  ).then((_) async {
-                                    if (!mounted) return;
-                                    await _refreshCustomers();
-                                  });
-                                },
-                                child: Padding(
-                                  padding: const EdgeInsets.fromLTRB(
-                                    12,
-                                    9,
-                                    12,
-                                    9,
                                   ),
-                                  child: Consumer(
-                                    builder: (context, ref, _) {
-                                      final theme = Theme.of(context);
-                                      final colorScheme = theme.colorScheme;
-                                      final currencyCode = ref.watch(
-                                        currencyProvider,
+                                  secondaryBackground: Container(
+                                    decoration: BoxDecoration(
+                                      color: Theme.of(context).colorScheme.error,
+                                      borderRadius: BorderRadius.circular(12),
+                                    ),
+                                    alignment: Alignment.centerRight,
+                                    padding: const EdgeInsets.only(right: 20),
+                                    child: const Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Text(
+                                          'Delete',
+                                          style: TextStyle(
+                                            color: Colors.white,
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                        ),
+                                        SizedBox(width: 8),
+                                        Icon(
+                                          Icons.delete_outline,
+                                          color: Colors.white,
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  confirmDismiss: (direction) async {
+                                    if (direction == DismissDirection.startToEnd) {
+                                      final shouldEdit = await _confirmEditCustomer(
+                                        customer,
                                       );
-                                      final currencySymbol =
-                                          NumberFormat.simpleCurrency(
-                                            name: currencyCode,
-                                          ).currencySymbol;
-                                      final balanceColor = balance > 0
-                                          ? (theme.brightness ==
-                                                    Brightness.light
-                                                ? Colors.green.shade700
-                                                : Colors.green.shade400)
-                                          : balance < 0
-                                          ? colorScheme.error
-                                          : colorScheme.onSurfaceVariant;
-                                      final balanceState = balance > 0
-                                          ? 'Advance'
-                                          : balance < 0
-                                          ? 'Due'
-                                          : 'Settled';
-                                      final customerPhotoPath =
-                                          _customerPhotoPaths[customer.id];
+                                      if (shouldEdit) {
+                                        Future.microtask(() async {
+                                          if (!mounted) return;
+                                          await _showEditCustomerDialog(customer);
+                                        });
+                                      }
+                                      return false;
+                                    }
+                                    return _confirmDeleteCustomer(customer);
+                                  },
+                                  onDismissed: (direction) async {
+                                    if (direction != DismissDirection.endToStart) {
+                                      return;
+                                    }
+                                    await _deleteCustomer(customer);
+                                    if (!mounted) return;
+                                  },
+                                  child: Card(
+                                    elevation: 0,
+                                    color: Colors.transparent,
+                                    surfaceTintColor: Colors.transparent,
+                                    clipBehavior: Clip.antiAlias,
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(14),
+                                    ),
+                                    child: InkWell(
+                                      borderRadius: BorderRadius.circular(14),
+                                      onTap: () async {
+                                        final seedTxs = await widget.isar.transactions
+                                            .filter()
+                                            .profileIdEqualTo(customer.profileId)
+                                            .customerIdEqualTo(customer.id)
+                                            .findAll();
+                                        seedTxs.sort(
+                                          (a, b) => a.date.compareTo(b.date),
+                                        );
+                                        if (!context.mounted) return;
 
-                                      return Row(
+                                        Navigator.push(
+                                          context,
+                                          PageRouteBuilder(
+                                            transitionDuration: Duration.zero,
+                                            reverseTransitionDuration: Duration.zero,
+                                            pageBuilder: (_, _, _) =>
+                                                CustomerLedgerScreen(
+                                                  isar: widget.isar,
+                                                  customerId: customer.id,
+                                                  customerName: customer.name,
+                                                  profileId: customer.profileId,
+                                                  customerPhotoPath:
+                                                      _customerPhotoPaths[customer.id],
+                                                  initialTransactions: seedTxs,
+                                                ),
+                                            transitionsBuilder:
+                                                (
+                                                  context,
+                                                  animation,
+                                                  secondaryAnimation,
+                                                  child,
+                                                ) => child,
+                                          ),
+                                        ).then((_) async {
+                                          if (!mounted) return;
+                                          await _refreshCustomers();
+                                        });
+                                      },
+                                      child: Padding(
+                                        padding: const EdgeInsets.fromLTRB(
+                                          12,
+                                          9,
+                                          12,
+                                          9,
+                                        ),
+                                        child: Consumer(
+                                          builder: (context, ref, _) {
+                                            final theme = Theme.of(context);
+                                            final colorScheme = theme.colorScheme;
+                                            final currencyCode = ref.watch(
+                                              currencyProvider,
+                                            );
+                                            final currencySymbol =
+                                                NumberFormat.simpleCurrency(
+                                                  name: currencyCode,
+                                                ).currencySymbol;
+                                            final balanceColor = balance > 0
+                                                ? (theme.brightness ==
+                                                          Brightness.light
+                                                      ? Colors.green.shade700
+                                                      : Colors.green.shade400)
+                                                : balance < 0
+                                                ? colorScheme.error
+                                                : colorScheme.onSurfaceVariant;
+                                            final balanceState = balance > 0
+                                                ? 'Advance'
+                                                : balance < 0
+                                                ? 'Due'
+                                                : 'Settled';
+                                            final customerPhotoPath =
+                                                _customerPhotoPaths[customer.id];
+
+                                            return Row(
                                         crossAxisAlignment:
                                             CrossAxisAlignment.center,
                                         children: [
@@ -1495,32 +2329,80 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                                                       ),
                                                     ),
                                                     const SizedBox(width: 8),
-                                                    Container(
-                                                      padding:
-                                                          const EdgeInsets.symmetric(
-                                                            horizontal: 8,
-                                                            vertical: 4,
-                                                          ),
-                                                      decoration: BoxDecoration(
-                                                        color: balanceColor
-                                                            .withAlpha(24),
-                                                        borderRadius:
-                                                            BorderRadius.circular(
-                                                              12,
-                                                            ),
+                                                    ConstrainedBox(
+                                                      constraints: BoxConstraints(
+                                                        maxWidth:
+                                                            MediaQuery.sizeOf(
+                                                              context,
+                                                            ).width *
+                                                            0.44,
                                                       ),
-                                                      child: Text(
-                                                        '$balanceState • $currencySymbol $balanceText',
-                                                        style: theme
-                                                            .textTheme
-                                                            .labelSmall
-                                                            ?.copyWith(
-                                                              color:
-                                                                  balanceColor,
-                                                              fontWeight:
-                                                                  FontWeight
-                                                                      .w700,
+                                                      child: Row(
+                                                        mainAxisSize:
+                                                            MainAxisSize.min,
+                                                        children: [
+                                                          Flexible(
+                                                            child: Container(
+                                                              padding:
+                                                                  const EdgeInsets.symmetric(
+                                                                    horizontal: 8,
+                                                                    vertical: 4,
+                                                                  ),
+                                                              decoration: BoxDecoration(
+                                                                color: balanceColor
+                                                                    .withAlpha(24),
+                                                                borderRadius:
+                                                                    BorderRadius.circular(
+                                                                      12,
+                                                                    ),
+                                                              ),
+                                                              child: Text(
+                                                                '$balanceState • $currencySymbol $balanceText',
+                                                                maxLines: 1,
+                                                                overflow:
+                                                                    TextOverflow
+                                                                        .ellipsis,
+                                                                style: theme
+                                                                    .textTheme
+                                                                    .labelSmall
+                                                                    ?.copyWith(
+                                                                      color:
+                                                                          balanceColor,
+                                                                      fontWeight:
+                                                                          FontWeight
+                                                                              .w700,
+                                                                    ),
+                                                              ),
                                                             ),
+                                                          ),
+                                                          const SizedBox(
+                                                            width: 2,
+                                                          ),
+                                                          IconButton(
+                                                            tooltip:
+                                                                'Customer actions',
+                                                            onPressed: () =>
+                                                                _showCustomerQuickActions(
+                                                                  customer,
+                                                                ),
+                                                            visualDensity:
+                                                                VisualDensity.compact,
+                                                            padding:
+                                                                EdgeInsets.zero,
+                                                            constraints:
+                                                                const BoxConstraints(
+                                                                  minWidth: 28,
+                                                                  minHeight: 28,
+                                                                ),
+                                                            icon: Icon(
+                                                              Icons
+                                                                  .more_vert_rounded,
+                                                              size: 20,
+                                                              color: colorScheme
+                                                                  .onSurfaceVariant,
+                                                            ),
+                                                          ),
+                                                        ],
                                                       ),
                                                     ),
                                                   ],
@@ -1529,28 +2411,31 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                                             ),
                                           ),
                                         ],
-                                      );
-                                    },
+                                            );
+                                          },
+                                        ),
+                                      ),
+                                    ),
                                   ),
                                 ),
-                              ),
-                            ),
-                          ),
-                          Padding(
-                            padding: const EdgeInsets.fromLTRB(72, 0, 4, 0),
-                            child: Container(
-                              height: 1,
-                              decoration: BoxDecoration(
-                                color: Theme.of(
-                                  context,
-                                ).colorScheme.outlineVariant.withAlpha(160),
-                                borderRadius: BorderRadius.circular(999),
-                              ),
-                            ),
-                          ),
-                        ],
-                      );
-                    },
+                                Padding(
+                                  padding: const EdgeInsets.fromLTRB(72, 0, 4, 0),
+                                  child: Container(
+                                    height: 1,
+                                    decoration: BoxDecoration(
+                                      color: Theme.of(
+                                        context,
+                                      ).colorScheme.outlineVariant.withAlpha(160),
+                                      borderRadius: BorderRadius.circular(999),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            );
+                          },
+                        ),
+                      ),
+                    ],
                   ),
                 );
               },
@@ -1572,11 +2457,13 @@ class _HomeCustomerSearchPage extends StatefulWidget {
   final Isar isar;
   final int profileId;
   final String? profileName;
+  final _CustomerSortOption sortOption;
 
   const _HomeCustomerSearchPage({
     required this.isar,
     required this.profileId,
     this.profileName,
+    required this.sortOption,
   });
 
   @override
@@ -1618,18 +2505,25 @@ class _HomeCustomerSearchPageState extends State<_HomeCustomerSearchPage> {
     final customers = await widget.isar.customers
         .filter()
         .profileIdEqualTo(widget.profileId)
-        .sortByName()
         .findAll();
-
-    final customerById = <int, Customer>{
-      for (final customer in customers) customer.id: customer,
-    };
 
     final txs = await widget.isar.transactions
         .filter()
         .profileIdEqualTo(widget.profileId)
         .isDeletedEqualTo(false)
         .findAll();
+
+    final balances = _computeCustomerBalances(customers, txs);
+    final sortedCustomers = _sortCustomers(
+      customers,
+      txs,
+      sortOption: widget.sortOption,
+      balances: balances,
+    );
+
+    final customerById = <int, Customer>{
+      for (final customer in sortedCustomers) customer.id: customer,
+    };
 
     final prefs = await SharedPreferences.getInstance();
     final currencyCode = prefs.getString('currencyCode') ?? 'INR';
@@ -1646,7 +2540,7 @@ class _HomeCustomerSearchPageState extends State<_HomeCustomerSearchPage> {
 
     if (!mounted) return;
     setState(() {
-      _customers = customers;
+      _customers = sortedCustomers;
       _transactions = txs;
       _customerById = customerById;
       _photoPaths = photos;
@@ -2756,6 +3650,8 @@ class _HomeCustomerSearchPageState extends State<_HomeCustomerSearchPage> {
 }
 
 enum _ProfileSheetActionType { switchProfile, createProfile, profileActions }
+
+enum _EditCustomerSheetAction { cancel, save }
 
 enum _SearchTimeFilter { allTime, month, year, customRange }
 

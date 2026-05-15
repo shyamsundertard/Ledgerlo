@@ -64,7 +64,11 @@ class ProfileRepository {
     return isar.businessProfiles.where().sortByName().findAll();
   }
 
-  static Future<BusinessProfile> createProfile(Isar isar, String name) async {
+  static Future<BusinessProfile> createProfile(
+    Isar isar,
+    String name, {
+    bool setActive = true,
+  }) async {
     final trimmedName = name.trim();
     if (trimmedName.isEmpty) {
       throw StateError('Profile name is required.');
@@ -84,7 +88,9 @@ class ProfileRepository {
       await isar.businessProfiles.put(profile);
     });
 
-    await setActiveProfile(isar, profile.id);
+    if (setActive) {
+      await setActiveProfile(isar, profile.id);
+    }
     return profile;
   }
 

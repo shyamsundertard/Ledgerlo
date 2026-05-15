@@ -1089,6 +1089,7 @@ class _CustomerLedgerScreenState extends ConsumerState<CustomerLedgerScreen> {
     return Scaffold(
       appBar: AppBar(
         centerTitle: false,
+        titleSpacing: 0,
         flexibleSpace: _showSearchBar
             ? null
             : GestureDetector(
@@ -1121,44 +1122,126 @@ class _CustomerLedgerScreenState extends ConsumerState<CustomerLedgerScreen> {
                   onChanged: (_) => setState(() {}),
                 ),
               )
-            : Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  GestureDetector(
-                    onTap: () async {
-                      await Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (_) => CustomerProfileScreen(
-                            isar: widget.isar,
-                            customerId: widget.customerId,
-                            profileId: widget.profileId,
-                            customerName: widget.customerName,
-                            currencyCode: ref.read(currencyProvider),
+            : GestureDetector(
+                onTap: () async {
+                  await Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => CustomerProfileScreen(
+                        isar: widget.isar,
+                        customerId: widget.customerId,
+                        profileId: widget.profileId,
+                        customerName: widget.customerName,
+                        currencyCode: ref.read(currencyProvider),
+                      ),
+                    ),
+                  );
+                },
+                child: Row(
+                  children: [
+                    Container(
+                      width: 34,
+                      height: 34,
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).colorScheme.primaryContainer,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      alignment: Alignment.center,
+                      clipBehavior: Clip.antiAlias,
+                      child: (widget.customerPhotoPath != null &&
+                              widget.customerPhotoPath!.trim().isNotEmpty)
+                          ? Image.file(
+                              File(widget.customerPhotoPath!),
+                              fit: BoxFit.cover,
+                              width: 34,
+                              height: 34,
+                              errorBuilder: (context, error, stackTrace) {
+                                final initials = widget.customerName
+                                    .trim()
+                                    .split(' ')
+                                    .where((part) => part.isNotEmpty)
+                                    .take(2)
+                                    .map((part) => part[0])
+                                    .join()
+                                    .toUpperCase();
+                                return Text(
+                                  initials.isEmpty ? '?' : initials,
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .labelLarge
+                                      ?.copyWith(
+                                        color: Theme.of(context)
+                                            .colorScheme
+                                            .onPrimaryContainer,
+                                        fontWeight: FontWeight.w800,
+                                      ),
+                                );
+                              },
+                            )
+                          : Text(
+                              widget.customerName
+                                      .trim()
+                                      .split(' ')
+                                      .where((part) => part.isNotEmpty)
+                                      .take(2)
+                                      .map((part) => part[0])
+                                      .join()
+                                      .toUpperCase()
+                                      .isEmpty
+                                  ? '?'
+                                  : widget.customerName
+                                        .trim()
+                                        .split(' ')
+                                        .where((part) => part.isNotEmpty)
+                                        .take(2)
+                                        .map((part) => part[0])
+                                        .join()
+                                        .toUpperCase(),
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .labelLarge
+                                  ?.copyWith(
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .onPrimaryContainer,
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                            ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            widget.customerName,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(fontSize: 20),
                           ),
-                        ),
-                      );
-                    },
-                    child: Text(
-                      widget.customerName,
-                      style: const TextStyle(fontSize: 20),
+                          Text(
+                            formatAmount(balance.abs()),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w500,
+                              color: balance >= 0
+                                  ? (Theme.of(context).brightness ==
+                                            Brightness.light
+                                        ? Colors.green.shade800
+                                        : Colors.green.shade400)
+                                  : (Theme.of(context).brightness ==
+                                            Brightness.light
+                                        ? Colors.red.shade900
+                                        : Colors.red.shade400),
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
-                  ),
-                  Text(
-                    formatAmount(balance.abs()),
-                    style: TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w500,
-                      color: balance >= 0
-                          ? (Theme.of(context).brightness == Brightness.light
-                                ? Colors.green.shade800
-                                : Colors.green.shade400)
-                          : (Theme.of(context).brightness == Brightness.light
-                                ? Colors.red.shade900
-                                : Colors.red.shade400),
-                    ),
-                  ),
-                ],
+                  ],
+                ),
               ),
         actions: [
           if (!_showSearchBar)
@@ -1216,57 +1299,10 @@ class _CustomerLedgerScreenState extends ConsumerState<CustomerLedgerScreen> {
       return true;
     }).toList();
 
-    List<Object> buildSectionItems(
-      List<txn_model.Transaction> sectionTxs, {
-      String? initialLastDay,
-    }) {
-      final items = <Object>[];
-      String? sectionLastDay = initialLastDay;
-      for (final tx in sectionTxs) {
-        final day = tx.date.toLocal().toString().split(' ')[0];
-        if (sectionLastDay != day) {
-          items.add(day);
-          sectionLastDay = day;
-        }
-        items.add(tx);
-      }
-      return items;
-    }
-
     List<Object> buildSectionItemsNewestToOldest(
-      List<txn_model.Transaction> sectionTxsNewestToOldest,
-    ) {
-      final items = <Object>[];
-      if (sectionTxsNewestToOldest.isEmpty) return items;
-
-      String? currentDay;
-      final dayTransactions = <txn_model.Transaction>[];
-
-      void flushDayGroup() {
-        if (currentDay == null || dayTransactions.isEmpty) return;
-        items.addAll(dayTransactions);
-        items.add(currentDay);
-        dayTransactions.clear();
-      }
-
-      for (final tx in sectionTxsNewestToOldest) {
-        final day = tx.date.toLocal().toString().split(' ')[0];
-        currentDay ??= day;
-
-        if (day != currentDay) {
-          flushDayGroup();
-          currentDay = day;
-        }
-
-        dayTransactions.add(tx);
-      }
-
-      flushDayGroup();
-      return items;
+      List<txn_model.Transaction> sectionTxsNewestToOldest, {
+      String? skipOldestDayHeader,
     }
-
-    List<Object> buildOldSectionItems(
-      List<txn_model.Transaction> sectionTxsNewestToOldest,
     ) {
       final items = <Object>[];
       if (sectionTxsNewestToOldest.isEmpty) return items;
@@ -1294,6 +1330,9 @@ class _CustomerLedgerScreenState extends ConsumerState<CustomerLedgerScreen> {
       }
 
       flushDayGroup();
+      if (skipOldestDayHeader != null && items.last == skipOldestDayHeader) {
+        items.removeLast();
+      }
       return items;
     }
 
@@ -1350,7 +1389,7 @@ class _CustomerLedgerScreenState extends ConsumerState<CustomerLedgerScreen> {
 
       final oldTxsInReverseChronological = oldTxsToDisplay.reversed.toList();
       oldDisplayItems.addAll(
-        buildOldSectionItems(oldTxsInReverseChronological),
+        buildSectionItemsNewestToOldest(oldTxsInReverseChronological),
       );
 
       String? lastOldDay;
@@ -1361,11 +1400,10 @@ class _CustomerLedgerScreenState extends ConsumerState<CustomerLedgerScreen> {
       }
 
       currentDisplayItems.addAll(
-        _showOldTransactions && lastOldDay != null
-            ? buildSectionItems(currentTxsToDisplay, initialLastDay: lastOldDay)
-            : buildSectionItemsNewestToOldest(
-                currentTxsToDisplay.reversed.toList(),
-              ),
+        buildSectionItemsNewestToOldest(
+          currentTxsToDisplay.reversed.toList(),
+          skipOldestDayHeader: _showOldTransactions ? lastOldDay : null,
+        ),
       );
     }
 
@@ -1413,7 +1451,7 @@ class _CustomerLedgerScreenState extends ConsumerState<CustomerLedgerScreen> {
                 );
               }, childCount: currentDisplayItems.length),
             ),
-            if (canToggleOldTransactions)
+            if (canToggleOldTransactions && !_showOldTransactions)
               SliverToBoxAdapter(
                 child: Padding(
                   padding: const EdgeInsets.symmetric(
@@ -1428,24 +1466,12 @@ class _CustomerLedgerScreenState extends ConsumerState<CustomerLedgerScreen> {
                           _pendingScrollOffset = _scrollController.hasClients
                               ? _scrollController.offset
                               : null;
-                          _showOldTransactions = !_showOldTransactions;
+                          _showOldTransactions = true;
                         });
                         _scheduleScrollAdjustment();
                       },
-                      icon: AnimatedRotation(
-                        turns: _showOldTransactions ? 0.5 : 0,
-                        duration: const Duration(milliseconds: 200),
-                        child: const Icon(Icons.history, size: 18),
-                      ),
-                      label: AnimatedSwitcher(
-                        duration: const Duration(milliseconds: 200),
-                        child: Text(
-                          _showOldTransactions
-                              ? 'Hide previous transactions'
-                              : 'See previous transactions',
-                          key: ValueKey(_showOldTransactions),
-                        ),
-                      ),
+                      icon: const Icon(Icons.history, size: 18),
+                      label: const Text('See previous transactions'),
                       style: TextButton.styleFrom(
                         padding: const EdgeInsets.symmetric(
                           horizontal: 16,

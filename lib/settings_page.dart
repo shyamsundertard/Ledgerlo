@@ -89,6 +89,64 @@ class SettingsPage extends ConsumerWidget {
     return input.trim().replaceAll(RegExp(r'\s+'), ' ').toLowerCase();
   }
 
+  Future<void> _showAppLockCooldownPicker(
+    BuildContext context,
+    WidgetRef ref,
+    AppLockCooldownOption selected,
+  ) async {
+    final picked = await showModalBottomSheet<AppLockCooldownOption>(
+      context: context,
+      useSafeArea: true,
+      builder: (sheetContext) {
+        final theme = Theme.of(sheetContext);
+        return SafeArea(
+          child: SingleChildScrollView(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Secure App Access cooldown',
+                    style: theme.textTheme.titleLarge,
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    'Choose how long the app can stay minimized before it locks.',
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  for (final option in AppLockCooldownOption.values)
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      visualDensity: VisualDensity.compact,
+                      leading: Icon(
+                        option == selected
+                            ? Icons.radio_button_checked
+                            : Icons.radio_button_off,
+                        color: option == selected
+                            ? theme.colorScheme.primary
+                            : theme.colorScheme.onSurfaceVariant,
+                      ),
+                      title: Text(option.label),
+                      onTap: () => Navigator.pop(sheetContext, option),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+
+    if (picked != null) {
+      await ref.read(securityProvider.notifier).setAppLockCooldown(picked);
+    }
+  }
+
   Future<void> _importCustomersIntoChosenProfile(BuildContext context) async {
     final profiles = await ProfileRepository.getProfiles(isar);
     if (!context.mounted) return;
@@ -558,7 +616,7 @@ class SettingsPage extends ConsumerWidget {
             title: const Text('Secure App Access'),
             subtitle: Text(
               security.appLockEnabled
-                  ? 'Enabled · Authentication required on app open'
+                  ? 'Enabled · Locks ${security.appLockCooldown.label.toLowerCase()} after minimising'
                   : 'Disabled · App opens without authentication',
             ),
             trailing: Transform.scale(
@@ -596,7 +654,21 @@ class SettingsPage extends ConsumerWidget {
               ),
             ),
           ),
-          const Divider(height: 1, indent: 60, endIndent: 12),
+          if (security.appLockEnabled) ...[
+            ListTile(
+              leading: const Icon(Icons.timer_outlined),
+              title: const Text('Lock after minimised for'),
+              subtitle: Text(security.appLockCooldown.label),
+              trailing: const Icon(Icons.chevron_right_rounded),
+              onTap: () => _showAppLockCooldownPicker(
+                context,
+                ref,
+                security.appLockCooldown,
+              ),
+            ),
+            const Divider(height: 1, indent: 60, endIndent: 12),
+          ] else
+            const Divider(height: 1, indent: 60, endIndent: 12),
           ListTile(
             leading: const Icon(Icons.backup_outlined),
             title: const Text('Backup/Restore Options'),

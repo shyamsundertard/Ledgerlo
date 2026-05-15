@@ -269,6 +269,7 @@ class _CustomerProfileScreenState extends State<CustomerProfileScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
+        titleSpacing: 0,
         title: const Text('Customer Profile'),
       ),
       body: FutureBuilder<_CustomerProfileData>(
