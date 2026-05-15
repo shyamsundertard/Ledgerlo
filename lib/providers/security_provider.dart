@@ -60,7 +60,7 @@ AppLockCooldownOption appLockCooldownOptionFromStorage(String? value) {
   for (final option in AppLockCooldownOption.values) {
     if (option.storageValue == value) return option;
   }
-  return AppLockCooldownOption.immediate;
+  return AppLockCooldownOption.fifteenSeconds;
 }
 
 class AppSecuritySettings {
@@ -97,7 +97,7 @@ class SecurityNotifier extends StateNotifier<AppSecuritySettings> {
     : super(
         const AppSecuritySettings(
           appLockEnabled: false,
-          appLockCooldown: AppLockCooldownOption.immediate,
+          appLockCooldown: AppLockCooldownOption.fifteenSeconds,
           isLoaded: false,
         ),
       ) {

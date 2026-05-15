@@ -28,6 +28,10 @@ class Customer {
   /// Soft delete support
   bool isDeleted = false;
 
+  /// Archived customers are hidden from the main list but kept in the DB
+  /// so transactions are preserved and the state survives device migration.
+  bool isArchived = false;
+
   DateTime createdAt = DateTime.now();
   DateTime updatedAt = DateTime.now();
 }

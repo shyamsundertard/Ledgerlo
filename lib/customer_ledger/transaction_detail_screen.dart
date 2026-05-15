@@ -1,4 +1,5 @@
 import 'dart:typed_data';
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -7,11 +8,28 @@ import 'package:intl/intl.dart';
 import 'package:isar/isar.dart';
 import 'package:ledger_app/core/enums/transaction_type.dart';
 import 'package:ledger_app/customer_ledger/edit_transaction_dialog.dart';
+import 'package:ledger_app/customer_ledger/snackbar_manager.dart';
 import 'package:ledger_app/data/models/transaction.dart' as txn_model;
 import 'package:ledger_app/providers/settings_provider.dart';
 import 'package:ledger_app/utils/transaction_labels.dart';
 
 enum _DeleteAction { soft, hard }
+
+/// Returned from [TransactionDetailScreen] when a delete action was performed,
+/// so the caller can show an Undo snackbar.
+class TransactionDetailResult {
+  final bool wasSoftDeleted;
+  final bool wasHardDeleted;
+  final bool wasRestored;
+  final Map<String, dynamic>? snapshot;
+
+  const TransactionDetailResult({
+    this.wasSoftDeleted = false,
+    this.wasHardDeleted = false,
+    this.wasRestored = false,
+    this.snapshot,
+  });
+}
 
 class TransactionDetailScreen extends ConsumerStatefulWidget {
   final Isar isar;
@@ -34,11 +52,30 @@ class _TransactionDetailScreenState
     extends ConsumerState<TransactionDetailScreen> {
   txn_model.Transaction? _transaction;
   bool _isLoading = true;
+  final List<OverlayEntry> _overlayEntries = [];
+  final List<Timer> _overlayTimers = [];
 
   @override
   void initState() {
     super.initState();
     _loadTransaction();
+  }
+
+  @override
+  void dispose() {
+    for (final t in _overlayTimers) {
+      try {
+        t.cancel();
+      } catch (_) {}
+    }
+    _overlayTimers.clear();
+    for (final e in _overlayEntries) {
+      try {
+        if (e.mounted) e.remove();
+      } catch (_) {}
+    }
+    _overlayEntries.clear();
+    super.dispose();
   }
 
   Future<void> _loadTransaction() async {
@@ -217,6 +254,8 @@ class _TransactionDetailScreenState
     final transaction = _transaction;
     if (transaction == null) return;
 
+    final beforeSnapshot = _snapshotTransaction(transaction);
+
     await EditTransactionDialog.show(
       context: context,
       ref: ref,
@@ -224,9 +263,61 @@ class _TransactionDetailScreenState
       isar: widget.isar,
       onTransactionUpdated: (_) async {
         await _loadTransaction();
+        if (!mounted) return;
+        SnackBarManager.showTopActionSnackBar(
+          context,
+          message: 'Transaction updated',
+          icon: Icons.edit_outlined,
+          actionLabel: 'Undo',
+          onAction: () => unawaited(_restoreFromSnapshot(beforeSnapshot)),
+          overlayEntries: _overlayEntries,
+          overlayTimers: _overlayTimers,
+        );
       },
       onShowSnackBar: _showEditDialogSnackBar,
     );
+  }
+
+  Map<String, dynamic> _snapshotTransaction(txn_model.Transaction t) {
+    return {
+      'id': t.id,
+      'profileId': t.profileId,
+      'uuid': t.uuid,
+      'customerId': t.customerId,
+      'type': t.type,
+      'amount': t.amount,
+      'note': t.note,
+      'photoPath': t.photoPath,
+      'photoPaths': List<String>.from(t.photoPaths),
+      'date': t.date,
+      'isDeleted': t.isDeleted,
+      'isEdited': t.isEdited,
+      'createdAt': t.createdAt,
+      'updatedAt': t.updatedAt,
+    };
+  }
+
+  Future<void> _restoreFromSnapshot(Map<String, dynamic> s) async {
+    final restored = txn_model.Transaction()
+      ..id = s['id'] as int
+      ..profileId = s['profileId'] as int
+      ..uuid = s['uuid'] as String
+      ..customerId = s['customerId'] as int
+      ..type = s['type'] as TransactionType
+      ..amount = s['amount'] as double
+      ..note = s['note'] as String?
+      ..photoPath = s['photoPath'] as String?
+      ..photoPaths = List<String>.from(s['photoPaths'] as List)
+      ..date = s['date'] as DateTime
+      ..isDeleted = s['isDeleted'] as bool
+      ..isEdited = s['isEdited'] as bool
+      ..createdAt = s['createdAt'] as DateTime
+      ..updatedAt = s['updatedAt'] as DateTime;
+    await widget.isar.writeTxn(() async {
+      await widget.isar.transactions.put(restored);
+    });
+    if (!mounted) return;
+    await _loadTransaction();
   }
 
   Future<bool> _confirmDelete({
@@ -275,6 +366,26 @@ class _TransactionDetailScreenState
     });
   }
 
+  Future<void> _restoreTransaction() async {
+    final transaction = _transaction;
+    if (transaction == null) return;
+
+    final snapshot = _snapshotTransaction(transaction);
+    await widget.isar.writeTxn(() async {
+      transaction.isDeleted = false;
+      transaction.updatedAt = DateTime.now();
+      await widget.isar.transactions.put(transaction);
+    });
+    if (!mounted) return;
+    Navigator.pop(
+      context,
+      TransactionDetailResult(
+        wasRestored: true,
+        snapshot: snapshot,
+      ),
+    );
+  }
+
   Future<void> _showDeleteOptions() async {
     final transaction = _transaction;
     if (transaction == null) return;
@@ -319,9 +430,16 @@ class _TransactionDetailScreenState
       );
       if (!confirmed) return;
 
+      final snapshot = _snapshotTransaction(transaction);
       await _softDeleteTransaction();
       if (!mounted) return;
-      Navigator.pop(context, true);
+      Navigator.pop(
+        context,
+        TransactionDetailResult(
+          wasSoftDeleted: true,
+          snapshot: snapshot,
+        ),
+      );
       return;
     }
 
@@ -332,9 +450,16 @@ class _TransactionDetailScreenState
     );
     if (!confirmed) return;
 
+    final snapshot = _snapshotTransaction(transaction);
     await _hardDeleteTransaction();
     if (!mounted) return;
-    Navigator.pop(context, true);
+    Navigator.pop(
+      context,
+      TransactionDetailResult(
+        wasHardDeleted: true,
+        snapshot: snapshot,
+      ),
+    );
   }
 
   void _openPhoto(Uint8List imageBytes) {
@@ -515,14 +640,24 @@ class _TransactionDetailScreenState
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
-                FilledButton.tonalIcon(
-                  onPressed: _openEditTransaction,
-                  icon: const Icon(Icons.edit_outlined),
-                  label: const Text('Edit Transaction'),
-                  style: FilledButton.styleFrom(
-                    backgroundColor: appBarTint,
+                if (transaction.isDeleted)
+                  FilledButton.tonalIcon(
+                    onPressed: _restoreTransaction,
+                    icon: const Icon(Icons.restore),
+                    label: const Text('Restore Transaction'),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: appBarTint,
+                    ),
+                  )
+                else
+                  FilledButton.tonalIcon(
+                    onPressed: _openEditTransaction,
+                    icon: const Icon(Icons.edit_outlined),
+                    label: const Text('Edit Transaction'),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: appBarTint,
+                    ),
                   ),
-                ),
                 const SizedBox(height: 10),
                 OutlinedButton.icon(
                   onPressed: _showDeleteOptions,

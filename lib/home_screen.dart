@@ -18,6 +18,7 @@ import 'providers/currency_provider.dart';
 import 'customer_ledger/snackbar_manager.dart';
 import 'customer_ledger/transaction_detail_screen.dart';
 import 'customer_ledger_screen.dart';
+import 'customer_profile_screen.dart';
 import 'core/backup/csv_backup_service.dart';
 import 'core/backup/backup_notification_service.dart';
 
@@ -190,10 +191,13 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   static const _customerSortPreferenceKey = 'home_customer_sort_option';
+  static String _archivedCustomersKey(int profileId) =>
+      'archived_customers_$profileId';
 
   Future<List<Customer>> _customersFuture = Future.value(const []);
   Map<int, double> _customerBalances = const {};
   Map<int, String> _customerPhotoPaths = const {};
+  Set<int> _archivedCustomerIds = const {};
   List<BusinessProfile> _profiles = [];
   int? _activeProfileId;
   _CustomerSortOption _customerSortOption =
@@ -220,6 +224,25 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       icon,
       _overlayEntries,
       _overlayTimers,
+    );
+  }
+
+  void _showUndoSnack({
+    required String message,
+    required IconData icon,
+    required Future<void> Function() onUndo,
+    Duration duration = const Duration(seconds: 5),
+  }) {
+    if (!mounted) return;
+    SnackBarManager.showTopActionSnackBar(
+      context,
+      message: message,
+      icon: icon,
+      actionLabel: 'Undo',
+      onAction: () => unawaited(onUndo()),
+      overlayEntries: _overlayEntries,
+      overlayTimers: _overlayTimers,
+      duration: duration,
     );
   }
 
@@ -321,10 +344,41 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   Future<List<Customer>> _fetchCustomersForProfile(int profileId) async {
-    final customers = await widget.isar.customers
+    final all = await widget.isar.customers
         .filter()
         .profileIdEqualTo(profileId)
         .findAll();
+
+    // One-time migration: import legacy SharedPreferences archive list into
+    // the Isar `isArchived` flag (so the state can be backed up and roams
+    // between devices).
+    final prefs = await SharedPreferences.getInstance();
+    final legacyKey = _archivedCustomersKey(profileId);
+    final legacyRaw = prefs.getStringList(legacyKey);
+    if (legacyRaw != null) {
+      final legacyIds = legacyRaw
+          .map(int.tryParse)
+          .whereType<int>()
+          .toSet();
+      final toMigrate = all
+          .where((c) => legacyIds.contains(c.id) && !c.isArchived)
+          .toList();
+      if (toMigrate.isNotEmpty) {
+        await widget.isar.writeTxn(() async {
+          for (final c in toMigrate) {
+            c.isArchived = true;
+          }
+          await widget.isar.customers.putAll(toMigrate);
+        });
+      }
+      await prefs.remove(legacyKey);
+    }
+
+    final archivedIds = all
+        .where((c) => c.isArchived)
+        .map((c) => c.id)
+        .toSet();
+    final customers = all.where((c) => !c.isArchived).toList();
 
     final transactions = await widget.isar.transactions
         .filter()
@@ -345,6 +399,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       _setStateAfterFrame(() {
         _customerBalances = balances;
         _customerPhotoPaths = photoPaths;
+        _archivedCustomerIds = archivedIds;
       });
     }
 
@@ -459,15 +514,167 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     }
   }
 
+  Future<void> _handleCustomerProfileResult(
+    CustomerProfileResult result,
+  ) async {
+    final customerSnapshot = result.customerSnapshot;
+    final txSnapshots = result.transactionSnapshots ?? const [];
+    final photoPath = result.photoPath;
+
+    if (result.kind == CustomerProfileResultKind.deleted) {
+      if (customerSnapshot == null) return;
+      final photoKey =
+          'customer_profile_photo_${result.oldProfileId}_${customerSnapshot['id']}';
+      _showUndoSnack(
+        message: '${customerSnapshot['name']} deleted',
+        icon: Icons.person_remove_outlined,
+        onUndo: () async {
+          await widget.isar.writeTxn(() async {
+            await widget.isar.customers
+                .put(_restoreCustomer(customerSnapshot));
+            if (txSnapshots.isNotEmpty) {
+              await widget.isar.transactions
+                  .putAll(txSnapshots.map(_restoreTxn).toList());
+            }
+          });
+          if (photoPath != null && photoPath.trim().isNotEmpty) {
+            final prefs = await SharedPreferences.getInstance();
+            await prefs.setString(photoKey, photoPath);
+          }
+          if (!mounted) return;
+          await _refreshCustomers();
+        },
+      );
+    } else if (result.kind == CustomerProfileResultKind.moved) {
+      if (customerSnapshot == null) return;
+      final oldProfileId = result.oldProfileId;
+      final newProfileId = result.newProfileId;
+      final customerId = customerSnapshot['id'] as int;
+      final oldPhotoKey =
+          'customer_profile_photo_${oldProfileId}_$customerId';
+      final newPhotoKey =
+          'customer_profile_photo_${newProfileId}_$customerId';
+      _showUndoSnack(
+        message:
+            'Moved ${customerSnapshot['name']} to ${result.targetProfileName ?? 'another profile'}',
+        icon: Icons.move_down_rounded,
+        onUndo: () async {
+          await widget.isar.writeTxn(() async {
+            await widget.isar.customers
+                .put(_restoreCustomer(customerSnapshot));
+            if (txSnapshots.isNotEmpty) {
+              await widget.isar.transactions
+                  .putAll(txSnapshots.map(_restoreTxn).toList());
+            }
+          });
+          if (photoPath != null && photoPath.trim().isNotEmpty) {
+            final prefs = await SharedPreferences.getInstance();
+            await prefs.setString(oldPhotoKey, photoPath);
+            if (oldPhotoKey != newPhotoKey) {
+              await prefs.remove(newPhotoKey);
+            }
+          }
+          if (!mounted) return;
+          await _refreshCustomers();
+        },
+      );
+    }
+  }
+
+  Future<void> _archiveCustomer(Customer customer) async {
+    final profileId = customer.profileId;
+    await _setCustomerArchived(customer.id, profileId, archived: true);
+    await _refreshCustomers();
+    if (!mounted) return;
+    _showUndoSnack(
+      message: '${customer.name} archived',
+      icon: Icons.archive_outlined,
+      onUndo: () async {
+        await _setCustomerArchived(customer.id, profileId, archived: false);
+        if (!mounted) return;
+        await _refreshCustomers();
+      },
+    );
+  }
+
+  Future<void> _setCustomerArchived(
+    int customerId,
+    int profileId, {
+    required bool archived,
+  }) async {
+    final customer = await widget.isar.customers.get(customerId);
+    if (customer == null) return;
+    if (customer.isArchived == archived) return;
+    await widget.isar.writeTxn(() async {
+      customer.isArchived = archived;
+      customer.updatedAt = DateTime.now();
+      await widget.isar.customers.put(customer);
+    });
+  }
+
+  Future<void> _showCustomerLongPressSheet(Customer customer) async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      useSafeArea: true,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.archive_outlined),
+              title: const Text('Archive customer'),
+              subtitle: const Text(
+                'Hide from the list. You can unarchive later.',
+              ),
+              onTap: () => Navigator.pop(sheetContext, 'archive'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted || action == null) return;
+    if (action == 'archive') {
+      await _archiveCustomer(customer);
+    }
+  }
+
+  Future<void> _openArchivedCustomers() async {
+    final profileId = _activeProfileId;
+    if (profileId == null) return;
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => _ArchivedCustomersScreen(
+          isar: widget.isar,
+          profileId: profileId,
+          archivedIds: _archivedCustomerIds.toSet(),
+          onUnarchive: (customerId) async {
+            await _setCustomerArchived(
+              customerId,
+              profileId,
+              archived: false,
+            );
+          },
+        ),
+      ),
+    );
+    if (!mounted) return;
+    await _refreshCustomers();
+  }
+
   Future<void> _deleteCustomer(Customer customer) async {
     final profilePhotoPrefKey =
         'customer_profile_photo_${customer.profileId}_${customer.id}';
+    final customerSnapshot = _snapshotCustomer(customer);
+    final txs = await widget.isar.transactions
+        .filter()
+        .profileIdEqualTo(customer.profileId)
+        .customerIdEqualTo(customer.id)
+        .findAll();
+    final txSnapshots = txs.map(_snapshotTxn).toList(growable: false);
+    final prefs = await SharedPreferences.getInstance();
+    final savedPhotoPath = prefs.getString(profilePhotoPrefKey);
+
     await widget.isar.writeTxn(() async {
-      final txs = await widget.isar.transactions
-          .filter()
-          .profileIdEqualTo(customer.profileId)
-          .customerIdEqualTo(customer.id)
-          .findAll();
       if (txs.isNotEmpty) {
         await widget.isar.transactions.deleteAll(
           txs.map((tx) => tx.id).toList(),
@@ -475,9 +682,96 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       }
       await widget.isar.customers.delete(customer.id);
     });
-    final prefs = await SharedPreferences.getInstance();
     await prefs.remove(profilePhotoPrefKey);
     await _refreshCustomers();
+
+    if (!mounted) return;
+    _showUndoSnack(
+      message: '${customer.name} deleted',
+      icon: Icons.person_remove_outlined,
+      onUndo: () async {
+        await widget.isar.writeTxn(() async {
+          await widget.isar.customers.put(_restoreCustomer(customerSnapshot));
+          if (txSnapshots.isNotEmpty) {
+            await widget.isar.transactions.putAll(
+              txSnapshots.map(_restoreTxn).toList(),
+            );
+          }
+        });
+        if (savedPhotoPath != null && savedPhotoPath.trim().isNotEmpty) {
+          final prefs2 = await SharedPreferences.getInstance();
+          await prefs2.setString(profilePhotoPrefKey, savedPhotoPath);
+        }
+        if (!mounted) return;
+        await _refreshCustomers();
+      },
+    );
+  }
+
+  Map<String, dynamic> _snapshotCustomer(Customer c) {
+    return {
+      'id': c.id,
+      'profileId': c.profileId,
+      'uuid': c.uuid,
+      'name': c.name,
+      'phone': c.phone,
+      'note': c.note,
+      'currentBalance': c.currentBalance,
+      'isDeleted': c.isDeleted,
+      'createdAt': c.createdAt,
+      'updatedAt': c.updatedAt,
+    };
+  }
+
+  Customer _restoreCustomer(Map<String, dynamic> s) {
+    return Customer()
+      ..id = s['id'] as int
+      ..profileId = s['profileId'] as int
+      ..uuid = s['uuid'] as String
+      ..name = s['name'] as String
+      ..phone = s['phone'] as String?
+      ..note = s['note'] as String?
+      ..currentBalance = s['currentBalance'] as double
+      ..isDeleted = s['isDeleted'] as bool
+      ..createdAt = s['createdAt'] as DateTime
+      ..updatedAt = s['updatedAt'] as DateTime;
+  }
+
+  Map<String, dynamic> _snapshotTxn(txn_model.Transaction t) {
+    return {
+      'id': t.id,
+      'profileId': t.profileId,
+      'uuid': t.uuid,
+      'customerId': t.customerId,
+      'type': t.type,
+      'amount': t.amount,
+      'note': t.note,
+      'photoPath': t.photoPath,
+      'photoPaths': List<String>.from(t.photoPaths),
+      'date': t.date,
+      'isDeleted': t.isDeleted,
+      'isEdited': t.isEdited,
+      'createdAt': t.createdAt,
+      'updatedAt': t.updatedAt,
+    };
+  }
+
+  txn_model.Transaction _restoreTxn(Map<String, dynamic> s) {
+    return txn_model.Transaction()
+      ..id = s['id'] as int
+      ..profileId = s['profileId'] as int
+      ..uuid = s['uuid'] as String
+      ..customerId = s['customerId'] as int
+      ..type = s['type'] as TransactionType
+      ..amount = s['amount'] as double
+      ..note = s['note'] as String?
+      ..photoPath = s['photoPath'] as String?
+      ..photoPaths = List<String>.from(s['photoPaths'] as List)
+      ..date = s['date'] as DateTime
+      ..isDeleted = s['isDeleted'] as bool
+      ..isEdited = s['isEdited'] as bool
+      ..createdAt = s['createdAt'] as DateTime
+      ..updatedAt = s['updatedAt'] as DateTime;
   }
 
   Future<bool> _confirmDeleteCustomer(Customer customer) async {
@@ -630,6 +924,28 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                         keyboardType: TextInputType.phone,
                       ),
                       const SizedBox(height: 14),
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: TextButton.icon(
+                          onPressed: () => Navigator.pop(
+                            sheetContext,
+                            _EditCustomerSheetAction.move,
+                          ),
+                          icon: const Icon(
+                            Icons.drive_file_move_outline,
+                            size: 18,
+                          ),
+                          label: const Text('Move to another profile'),
+                          style: TextButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 4,
+                            ),
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
                       Row(
                         children: [
                           Expanded(
@@ -686,16 +1002,51 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
     if (result == null || result == _EditCustomerSheetAction.cancel) return;
 
+    if (result == _EditCustomerSheetAction.move) {
+      if (!mounted) return;
+      await _moveCustomerToDifferentProfile(
+        customer,
+        draftName: updatedName.isEmpty ? customer.name : updatedName,
+        draftPhone: updatedPhone,
+      );
+      return;
+    }
+
     if (updatedName.isEmpty) return;
 
+    final oldName = customer.name;
+    final oldPhone = customer.phone;
+    final newName = _normalizeCustomerName(updatedName);
+    final newPhone = updatedPhone.isEmpty ? null : updatedPhone;
+
+    if (oldName == newName && oldPhone == newPhone) {
+      return;
+    }
+
     await widget.isar.writeTxn(() async {
-      customer.name = _normalizeCustomerName(updatedName);
-      customer.phone = updatedPhone.isEmpty ? null : updatedPhone;
+      customer.name = newName;
+      customer.phone = newPhone;
       customer.updatedAt = DateTime.now();
       await widget.isar.customers.put(customer);
     });
 
     await _refreshCustomers();
+
+    if (!mounted) return;
+    _showUndoSnack(
+      message: 'Customer updated',
+      icon: Icons.edit_outlined,
+      onUndo: () async {
+        await widget.isar.writeTxn(() async {
+          customer.name = oldName;
+          customer.phone = oldPhone;
+          customer.updatedAt = DateTime.now();
+          await widget.isar.customers.put(customer);
+        });
+        if (!mounted) return;
+        await _refreshCustomers();
+      },
+    );
   }
 
   Future<void> _showAddCustomerDialog(int profileId) async {
@@ -1299,12 +1650,17 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     if (shouldMove != true) return;
 
     final oldProfileId = customer.profileId;
+    final oldName = customer.name;
+    final oldPhone = customer.phone;
     final photoPath = _customerPhotoPaths[customer.id];
     final relatedTransactions = await widget.isar.transactions
         .filter()
         .profileIdEqualTo(customer.profileId)
         .customerIdEqualTo(customer.id)
         .findAll();
+    final relatedTransactionIds = relatedTransactions
+        .map((t) => t.id)
+        .toList(growable: false);
     final now = DateTime.now();
 
     await widget.isar.writeTxn(() async {
@@ -1334,70 +1690,43 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     }
 
     if (!mounted) return;
-    _showTopToast(
-      'Moved ${customer.name} to ${targetProfile.name}',
-      color: const Color(0xFF16A34A),
+    _showUndoSnack(
+      message: 'Moved ${customer.name} to ${targetProfile.name}',
       icon: Icons.move_down_rounded,
+      onUndo: () async {
+        await widget.isar.writeTxn(() async {
+          customer.profileId = oldProfileId;
+          customer.name = oldName;
+          customer.phone = oldPhone;
+          customer.updatedAt = DateTime.now();
+          await widget.isar.customers.put(customer);
+          if (relatedTransactionIds.isNotEmpty) {
+            final txs = await widget.isar.transactions
+                .getAll(relatedTransactionIds);
+            final restored = <txn_model.Transaction>[];
+            for (final tx in txs) {
+              if (tx == null) continue;
+              tx.profileId = oldProfileId;
+              tx.updatedAt = DateTime.now();
+              restored.add(tx);
+            }
+            if (restored.isNotEmpty) {
+              await widget.isar.transactions.putAll(restored);
+            }
+          }
+        });
+        final prefs2 = await SharedPreferences.getInstance();
+        if (photoPath != null && photoPath.trim().isNotEmpty) {
+          await prefs2.setString(oldPhotoKey, photoPath);
+          if (oldPhotoKey != newPhotoKey) {
+            await prefs2.remove(newPhotoKey);
+          }
+        }
+        if (!mounted) return;
+        await _refreshCustomers();
+      },
     );
     await _refreshCustomers();
-  }
-
-  Future<void> _showCustomerQuickActions(Customer customer) async {
-    final action = await showModalBottomSheet<String>(
-      context: context,
-      useSafeArea: true,
-      builder: (sheetContext) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.edit_outlined),
-              title: const Text('Edit customer'),
-              onTap: () => Navigator.pop(sheetContext, 'edit'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.drive_file_move_outline),
-              title: const Text('Move to another profile'),
-              onTap: () => Navigator.pop(sheetContext, 'move'),
-            ),
-            ListTile(
-              leading: Icon(
-                Icons.delete_outline,
-                color: Theme.of(sheetContext).colorScheme.error,
-              ),
-              title: Text(
-                'Delete customer',
-                style: TextStyle(
-                  color: Theme.of(sheetContext).colorScheme.error,
-                ),
-              ),
-              onTap: () => Navigator.pop(sheetContext, 'delete'),
-            ),
-          ],
-        ),
-      ),
-    );
-
-    if (!mounted || action == null) return;
-
-    switch (action) {
-      case 'edit':
-        await _showEditCustomerDialog(customer);
-        break;
-      case 'move':
-        await _moveCustomerToDifferentProfile(
-          customer,
-          draftName: customer.name,
-          draftPhone: customer.phone ?? '',
-        );
-        break;
-      case 'delete':
-        final shouldDelete = await _confirmDeleteCustomer(customer);
-        if (shouldDelete) {
-          await _deleteCustomer(customer);
-        }
-        break;
-    }
   }
 
   Future<void> _showRenameProfileDialog(BusinessProfile profile) async {
@@ -1432,6 +1761,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     });
     if (profileName == null || profileName.trim().isEmpty) return;
 
+    final oldName = profile.name;
+    if (oldName.trim() == profileName.trim()) return;
+
     try {
       await ProfileRepository.renameProfile(
         widget.isar,
@@ -1442,6 +1774,29 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
       if (!mounted) return;
       _setStateAfterFrame(() => _profiles = profiles);
+      _showUndoSnack(
+        message: 'Profile renamed to "$profileName"',
+        icon: Icons.drive_file_rename_outline,
+        onUndo: () async {
+          try {
+            await ProfileRepository.renameProfile(
+              widget.isar,
+              profile.id,
+              oldName,
+            );
+            final profiles2 = await ProfileRepository.getProfiles(widget.isar);
+            if (!mounted) return;
+            _setStateAfterFrame(() => _profiles = profiles2);
+          } catch (_) {
+            if (!mounted) return;
+            _showTopToast(
+              'Could not undo rename',
+              color: const Color(0xFFDC2626),
+              icon: Icons.warning_amber_rounded,
+            );
+          }
+        },
+      );
     } on StateError {
       if (!mounted) return;
       _showTopToast(
@@ -1475,8 +1830,42 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
     if (shouldDelete != true) return;
 
+    // Snapshot for undo
+    final profileSnapshot = {
+      'id': profile.id,
+      'uuid': profile.uuid,
+      'name': profile.name,
+      'createdAt': profile.createdAt,
+      'updatedAt': profile.updatedAt,
+    };
+    final customers = await widget.isar.customers
+        .filter()
+        .profileIdEqualTo(profile.id)
+        .findAll();
+    final customerSnapshots = customers
+        .map(_snapshotCustomer)
+        .toList(growable: false);
+    final txs = await widget.isar.transactions
+        .filter()
+        .profileIdEqualTo(profile.id)
+        .findAll();
+    final txSnapshots = txs.map(_snapshotTxn).toList(growable: false);
+    final prevActiveProfileId = _activeProfileId;
+    final prefs = await SharedPreferences.getInstance();
+    final photoPrefsBackup = <String, String>{};
+    for (final c in customers) {
+      final key = 'customer_profile_photo_${profile.id}_${c.id}';
+      final v = prefs.getString(key);
+      if (v != null && v.isNotEmpty) {
+        photoPrefsBackup[key] = v;
+      }
+    }
+
     try {
       await ProfileRepository.deleteProfile(widget.isar, profile.id);
+      for (final key in photoPrefsBackup.keys) {
+        await prefs.remove(key);
+      }
       final activeProfileId = await ProfileRepository.ensureInitialized(
         widget.isar,
       );
@@ -1488,6 +1877,54 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         _profiles = profiles;
         _customersFuture = _fetchCustomersForProfile(activeProfileId);
       });
+
+      _showUndoSnack(
+        message: 'Profile "${profile.name}" deleted',
+        icon: Icons.business_outlined,
+        onUndo: () async {
+          await widget.isar.writeTxn(() async {
+            final restoredProfile = BusinessProfile()
+              ..id = profileSnapshot['id'] as int
+              ..uuid = profileSnapshot['uuid'] as String
+              ..name = profileSnapshot['name'] as String
+              ..createdAt = profileSnapshot['createdAt'] as DateTime
+              ..updatedAt = profileSnapshot['updatedAt'] as DateTime;
+            await widget.isar.businessProfiles.put(restoredProfile);
+            if (customerSnapshots.isNotEmpty) {
+              await widget.isar.customers.putAll(
+                customerSnapshots.map(_restoreCustomer).toList(),
+              );
+            }
+            if (txSnapshots.isNotEmpty) {
+              await widget.isar.transactions.putAll(
+                txSnapshots.map(_restoreTxn).toList(),
+              );
+            }
+          });
+          final prefs2 = await SharedPreferences.getInstance();
+          for (final entry in photoPrefsBackup.entries) {
+            await prefs2.setString(entry.key, entry.value);
+          }
+          if (prevActiveProfileId != null) {
+            await ProfileRepository.setActiveProfile(
+              widget.isar,
+              prevActiveProfileId,
+            );
+          }
+          final restoredActive = await ProfileRepository.ensureInitialized(
+            widget.isar,
+          );
+          final restoredProfiles = await ProfileRepository.getProfiles(
+            widget.isar,
+          );
+          if (!mounted) return;
+          _setStateAfterFrame(() {
+            _activeProfileId = restoredActive;
+            _profiles = restoredProfiles;
+            _customersFuture = _fetchCustomersForProfile(restoredActive);
+          });
+        },
+      );
     } on StateError {
       if (!mounted) return;
       _showTopToast(
@@ -1975,7 +2412,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                 onPressed: () async {
                   final profileId = _activeProfileId;
                   if (profileId == null) return;
-                  await Navigator.push(
+                  final result = await Navigator.push<CustomerProfileResult>(
                     context,
                     MaterialPageRoute(
                       builder: (_) => _HomeCustomerSearchPage(
@@ -1988,6 +2425,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                   );
                   if (!mounted) return;
                   await _refreshCustomers();
+                  if (result != null) {
+                    await _handleCustomerProfileResult(result);
+                  }
                 },
               ),
               IconButton(
@@ -2033,9 +2473,63 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
                 final customers = snapshot.data ?? [];
 
+                final toolbar = Padding(
+                  padding: const EdgeInsets.fromLTRB(6, 2, 6, 0),
+                  child: Row(
+                    children: [
+                      if (_archivedCustomerIds.isNotEmpty)
+                        OutlinedButton.icon(
+                          onPressed: _openArchivedCustomers,
+                          icon: const Icon(
+                            Icons.archive_outlined,
+                            size: 18,
+                          ),
+                          label: Text(
+                            'Archived (${_archivedCustomerIds.length})',
+                          ),
+                          style: OutlinedButton.styleFrom(
+                            visualDensity: VisualDensity.compact,
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 6,
+                            ),
+                            tapTargetSize:
+                                MaterialTapTargetSize.shrinkWrap,
+                          ),
+                        ),
+                      const Spacer(),
+                      OutlinedButton.icon(
+                        onPressed: _showCustomerSortSheet,
+                        icon: const Icon(Icons.sort, size: 18),
+                        label: Text(_customerSortOption.label),
+                        style: OutlinedButton.styleFrom(
+                          visualDensity: VisualDensity.compact,
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 6,
+                          ),
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+
                 if (customers.isEmpty) {
-                  return const Center(
-                    child: Text("No customers yet. Tap + to add one."),
+                  return RefreshIndicator(
+                    onRefresh: _refreshCustomers,
+                    child: ListView(
+                      physics: const AlwaysScrollableScrollPhysics(),
+                      children: [
+                        toolbar,
+                        const SizedBox(height: 80),
+                        const Center(
+                          child: Text(
+                            "No customers yet. Tap + to add one.",
+                          ),
+                        ),
+                      ],
+                    ),
                   );
                 }
 
@@ -2043,31 +2537,13 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                   onRefresh: _refreshCustomers,
                   child: Column(
                     children: [
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(6, 2, 6, 0),
-                        child: Align(
-                          alignment: Alignment.centerRight,
-                          child: OutlinedButton.icon(
-                            onPressed: _showCustomerSortSheet,
-                            icon: const Icon(Icons.sort, size: 18),
-                            label: Text(_customerSortOption.label),
-                            style: OutlinedButton.styleFrom(
-                              visualDensity: VisualDensity.compact,
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 8,
-                                vertical: 6,
-                              ),
-                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                            ),
-                          ),
-                        ),
-                      ),
+                      toolbar,
                       Expanded(
                         child: ListView.builder(
                           padding: const EdgeInsets.fromLTRB(
-                            6,
                             0,
-                            6,
+                            0,
+                            0,
                             8,
                           ),
                           itemCount: customers.length,
@@ -2177,6 +2653,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                                     ),
                                     child: InkWell(
                                       borderRadius: BorderRadius.circular(14),
+                                      onLongPress: () =>
+                                          _showCustomerLongPressSheet(customer),
                                       onTap: () async {
                                         final seedTxs = await widget.isar.transactions
                                             .filter()
@@ -2188,7 +2666,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                                         );
                                         if (!context.mounted) return;
 
-                                        Navigator.push(
+                                        Navigator.push<CustomerProfileResult>(
                                           context,
                                           PageRouteBuilder(
                                             transitionDuration: Duration.zero,
@@ -2211,16 +2689,21 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                                                   child,
                                                 ) => child,
                                           ),
-                                        ).then((_) async {
+                                        ).then((result) async {
                                           if (!mounted) return;
                                           await _refreshCustomers();
+                                          if (result != null) {
+                                            await _handleCustomerProfileResult(
+                                              result,
+                                            );
+                                          }
                                         });
                                       },
                                       child: Padding(
                                         padding: const EdgeInsets.fromLTRB(
-                                          12,
+                                          8,
                                           9,
-                                          12,
+                                          8,
                                           9,
                                         ),
                                         child: Consumer(
@@ -2242,11 +2725,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                                                 : balance < 0
                                                 ? colorScheme.error
                                                 : colorScheme.onSurfaceVariant;
-                                            final balanceState = balance > 0
-                                                ? 'Advance'
-                                                : balance < 0
-                                                ? 'Due'
-                                                : 'Settled';
                                             final customerPhotoPath =
                                                 _customerPhotoPaths[customer.id];
 
@@ -2328,14 +2806,14 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                                                             ),
                                                       ),
                                                     ),
-                                                    const SizedBox(width: 8),
+                                                    const SizedBox(width: 6),
                                                     ConstrainedBox(
                                                       constraints: BoxConstraints(
                                                         maxWidth:
                                                             MediaQuery.sizeOf(
                                                               context,
                                                             ).width *
-                                                            0.44,
+                                                            0.36,
                                                       ),
                                                       child: Row(
                                                         mainAxisSize:
@@ -2345,61 +2823,43 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                                                             child: Container(
                                                               padding:
                                                                   const EdgeInsets.symmetric(
-                                                                    horizontal: 8,
-                                                                    vertical: 4,
+                                                                    horizontal: 6,
+                                                                    vertical: 2,
                                                                   ),
                                                               decoration: BoxDecoration(
                                                                 color: balanceColor
                                                                     .withAlpha(24),
                                                                 borderRadius:
                                                                     BorderRadius.circular(
-                                                                      12,
+                                                                      10,
                                                                     ),
                                                               ),
-                                                              child: Text(
-                                                                '$balanceState • $currencySymbol $balanceText',
-                                                                maxLines: 1,
-                                                                overflow:
-                                                                    TextOverflow
-                                                                        .ellipsis,
-                                                                style: theme
-                                                                    .textTheme
-                                                                    .labelSmall
-                                                                    ?.copyWith(
-                                                                      color:
-                                                                          balanceColor,
-                                                                      fontWeight:
-                                                                          FontWeight
-                                                                              .w700,
-                                                                    ),
+                                                              child: FittedBox(
+                                                                fit: BoxFit
+                                                                    .scaleDown,
+                                                                alignment:
+                                                                    Alignment
+                                                                        .centerRight,
+                                                                child: Text(
+                                                                  '$currencySymbol $balanceText',
+                                                                  maxLines: 1,
+                                                                  overflow:
+                                                                      TextOverflow
+                                                                          .ellipsis,
+                                                                  style: theme
+                                                                      .textTheme
+                                                                      .labelSmall
+                                                                      ?.copyWith(
+                                                                        fontSize:
+                                                                            10,
+                                                                        color:
+                                                                            balanceColor,
+                                                                        fontWeight:
+                                                                            FontWeight
+                                                                                .w700,
+                                                                      ),
+                                                                ),
                                                               ),
-                                                            ),
-                                                          ),
-                                                          const SizedBox(
-                                                            width: 2,
-                                                          ),
-                                                          IconButton(
-                                                            tooltip:
-                                                                'Customer actions',
-                                                            onPressed: () =>
-                                                                _showCustomerQuickActions(
-                                                                  customer,
-                                                                ),
-                                                            visualDensity:
-                                                                VisualDensity.compact,
-                                                            padding:
-                                                                EdgeInsets.zero,
-                                                            constraints:
-                                                                const BoxConstraints(
-                                                                  minWidth: 28,
-                                                                  minHeight: 28,
-                                                                ),
-                                                            icon: Icon(
-                                                              Icons
-                                                                  .more_vert_rounded,
-                                                              size: 20,
-                                                              color: colorScheme
-                                                                  .onSurfaceVariant,
                                                             ),
                                                           ),
                                                         ],
@@ -3051,7 +3511,7 @@ class _HomeCustomerSearchPageState extends State<_HomeCustomerSearchPage> {
     seedTxs.sort((a, b) => a.date.compareTo(b.date));
     if (!mounted) return;
 
-    await Navigator.push(
+    final result = await Navigator.push<CustomerProfileResult>(
       context,
       PageRouteBuilder(
         transitionDuration: Duration.zero,
@@ -3070,6 +3530,11 @@ class _HomeCustomerSearchPageState extends State<_HomeCustomerSearchPage> {
     );
 
     await _load();
+    if (!mounted) return;
+    if (result != null) {
+      // Bubble the result up so the parent home screen can offer undo.
+      Navigator.of(context).pop(result);
+    }
   }
 
   Future<void> _openTransaction(txn_model.Transaction tx) async {
@@ -3651,7 +4116,7 @@ class _HomeCustomerSearchPageState extends State<_HomeCustomerSearchPage> {
 
 enum _ProfileSheetActionType { switchProfile, createProfile, profileActions }
 
-enum _EditCustomerSheetAction { cancel, save }
+enum _EditCustomerSheetAction { cancel, save, move }
 
 enum _SearchTimeFilter { allTime, month, year, customRange }
 
@@ -3667,4 +4132,138 @@ class _ProfileSheetAction {
     this.profileId,
     this.profileName,
   });
+}
+
+class _ArchivedCustomersScreen extends StatefulWidget {
+  final Isar isar;
+  final int profileId;
+  final Set<int> archivedIds;
+  final Future<void> Function(int customerId) onUnarchive;
+
+  const _ArchivedCustomersScreen({
+    required this.isar,
+    required this.profileId,
+    required this.archivedIds,
+    required this.onUnarchive,
+  });
+
+  @override
+  State<_ArchivedCustomersScreen> createState() =>
+      _ArchivedCustomersScreenState();
+}
+
+class _ArchivedCustomersScreenState extends State<_ArchivedCustomersScreen> {
+  late Future<List<Customer>> _future;
+  late Set<int> _archivedIds;
+
+  @override
+  void initState() {
+    super.initState();
+    _archivedIds = widget.archivedIds.toSet();
+    _future = _loadArchived();
+  }
+
+  Future<List<Customer>> _loadArchived() async {
+    if (_archivedIds.isEmpty) return const [];
+    final all = await widget.isar.customers
+        .filter()
+        .profileIdEqualTo(widget.profileId)
+        .findAll();
+    final list = all.where((c) => _archivedIds.contains(c.id)).toList();
+    list.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+    return list;
+  }
+
+  Future<void> _unarchive(Customer customer) async {
+    await widget.onUnarchive(customer.id);
+    if (!mounted) return;
+    setState(() {
+      _archivedIds.remove(customer.id);
+      _future = _loadArchived();
+    });
+  }
+
+  Future<void> _openCustomer(Customer customer) async {
+    final seedTxs = await widget.isar.transactions
+        .filter()
+        .profileIdEqualTo(customer.profileId)
+        .customerIdEqualTo(customer.id)
+        .findAll();
+    seedTxs.sort((a, b) => a.date.compareTo(b.date));
+    final prefs = await SharedPreferences.getInstance();
+    final photoPath = prefs.getString(
+      'customer_profile_photo_${customer.profileId}_${customer.id}',
+    );
+    if (!mounted) return;
+
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => CustomerLedgerScreen(
+          isar: widget.isar,
+          customerId: customer.id,
+          customerName: customer.name,
+          profileId: customer.profileId,
+          customerPhotoPath: photoPath,
+          initialTransactions: seedTxs,
+        ),
+      ),
+    );
+
+    if (!mounted) return;
+    setState(() {
+      _future = _loadArchived();
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Archived customers'),
+      ),
+      body: FutureBuilder<List<Customer>>(
+        future: _future,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          final customers = snapshot.data ?? const [];
+          if (customers.isEmpty) {
+            return const Center(
+              child: Padding(
+                padding: EdgeInsets.all(24),
+                child: Text(
+                  'No archived customers.',
+                  textAlign: TextAlign.center,
+                ),
+              ),
+            );
+          }
+          return ListView.separated(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            itemCount: customers.length,
+            separatorBuilder: (_, _) => const Divider(height: 1),
+            itemBuilder: (context, index) {
+              final customer = customers[index];
+              return ListTile(
+                leading: const CircleAvatar(
+                  child: Icon(Icons.archive_outlined),
+                ),
+                title: Text(customer.name),
+                subtitle: customer.phone?.trim().isNotEmpty == true
+                    ? Text(customer.phone!.trim())
+                    : null,
+                onTap: () => _openCustomer(customer),
+                trailing: TextButton.icon(
+                  onPressed: () => _unarchive(customer),
+                  icon: const Icon(Icons.unarchive_outlined),
+                  label: const Text('Unarchive'),
+                ),
+              );
+            },
+          );
+        },
+      ),
+    );
+  }
 }

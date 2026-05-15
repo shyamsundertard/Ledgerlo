@@ -27,38 +27,43 @@ const CustomerSchema = CollectionSchema(
       name: r'currentBalance',
       type: IsarType.double,
     ),
-    r'isDeleted': PropertySchema(
+    r'isArchived': PropertySchema(
       id: 2,
+      name: r'isArchived',
+      type: IsarType.bool,
+    ),
+    r'isDeleted': PropertySchema(
+      id: 3,
       name: r'isDeleted',
       type: IsarType.bool,
     ),
     r'name': PropertySchema(
-      id: 3,
+      id: 4,
       name: r'name',
       type: IsarType.string,
     ),
     r'note': PropertySchema(
-      id: 4,
+      id: 5,
       name: r'note',
       type: IsarType.string,
     ),
     r'phone': PropertySchema(
-      id: 5,
+      id: 6,
       name: r'phone',
       type: IsarType.string,
     ),
     r'profileId': PropertySchema(
-      id: 6,
+      id: 7,
       name: r'profileId',
       type: IsarType.long,
     ),
     r'updatedAt': PropertySchema(
-      id: 7,
+      id: 8,
       name: r'updatedAt',
       type: IsarType.dateTime,
     ),
     r'uuid': PropertySchema(
-      id: 8,
+      id: 9,
       name: r'uuid',
       type: IsarType.string,
     )
@@ -148,13 +153,14 @@ void _customerSerialize(
 ) {
   writer.writeDateTime(offsets[0], object.createdAt);
   writer.writeDouble(offsets[1], object.currentBalance);
-  writer.writeBool(offsets[2], object.isDeleted);
-  writer.writeString(offsets[3], object.name);
-  writer.writeString(offsets[4], object.note);
-  writer.writeString(offsets[5], object.phone);
-  writer.writeLong(offsets[6], object.profileId);
-  writer.writeDateTime(offsets[7], object.updatedAt);
-  writer.writeString(offsets[8], object.uuid);
+  writer.writeBool(offsets[2], object.isArchived);
+  writer.writeBool(offsets[3], object.isDeleted);
+  writer.writeString(offsets[4], object.name);
+  writer.writeString(offsets[5], object.note);
+  writer.writeString(offsets[6], object.phone);
+  writer.writeLong(offsets[7], object.profileId);
+  writer.writeDateTime(offsets[8], object.updatedAt);
+  writer.writeString(offsets[9], object.uuid);
 }
 
 Customer _customerDeserialize(
@@ -167,13 +173,14 @@ Customer _customerDeserialize(
   object.createdAt = reader.readDateTime(offsets[0]);
   object.currentBalance = reader.readDouble(offsets[1]);
   object.id = id;
-  object.isDeleted = reader.readBool(offsets[2]);
-  object.name = reader.readString(offsets[3]);
-  object.note = reader.readStringOrNull(offsets[4]);
-  object.phone = reader.readStringOrNull(offsets[5]);
-  object.profileId = reader.readLong(offsets[6]);
-  object.updatedAt = reader.readDateTime(offsets[7]);
-  object.uuid = reader.readString(offsets[8]);
+  object.isArchived = reader.readBool(offsets[2]);
+  object.isDeleted = reader.readBool(offsets[3]);
+  object.name = reader.readString(offsets[4]);
+  object.note = reader.readStringOrNull(offsets[5]);
+  object.phone = reader.readStringOrNull(offsets[6]);
+  object.profileId = reader.readLong(offsets[7]);
+  object.updatedAt = reader.readDateTime(offsets[8]);
+  object.uuid = reader.readString(offsets[9]);
   return object;
 }
 
@@ -191,16 +198,18 @@ P _customerDeserializeProp<P>(
     case 2:
       return (reader.readBool(offset)) as P;
     case 3:
-      return (reader.readString(offset)) as P;
+      return (reader.readBool(offset)) as P;
     case 4:
-      return (reader.readStringOrNull(offset)) as P;
+      return (reader.readString(offset)) as P;
     case 5:
       return (reader.readStringOrNull(offset)) as P;
     case 6:
-      return (reader.readLong(offset)) as P;
+      return (reader.readStringOrNull(offset)) as P;
     case 7:
-      return (reader.readDateTime(offset)) as P;
+      return (reader.readLong(offset)) as P;
     case 8:
+      return (reader.readDateTime(offset)) as P;
+    case 9:
       return (reader.readString(offset)) as P;
     default:
       throw IsarError('Unknown property with id $propertyId');
@@ -701,6 +710,16 @@ extension CustomerQueryFilter
         includeLower: includeLower,
         upper: upper,
         includeUpper: includeUpper,
+      ));
+    });
+  }
+
+  QueryBuilder<Customer, Customer, QAfterFilterCondition> isArchivedEqualTo(
+      bool value) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'isArchived',
+        value: value,
       ));
     });
   }
@@ -1405,6 +1424,18 @@ extension CustomerQuerySortBy on QueryBuilder<Customer, Customer, QSortBy> {
     });
   }
 
+  QueryBuilder<Customer, Customer, QAfterSortBy> sortByIsArchived() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'isArchived', Sort.asc);
+    });
+  }
+
+  QueryBuilder<Customer, Customer, QAfterSortBy> sortByIsArchivedDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'isArchived', Sort.desc);
+    });
+  }
+
   QueryBuilder<Customer, Customer, QAfterSortBy> sortByIsDeleted() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'isDeleted', Sort.asc);
@@ -1528,6 +1559,18 @@ extension CustomerQuerySortThenBy
     });
   }
 
+  QueryBuilder<Customer, Customer, QAfterSortBy> thenByIsArchived() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'isArchived', Sort.asc);
+    });
+  }
+
+  QueryBuilder<Customer, Customer, QAfterSortBy> thenByIsArchivedDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'isArchived', Sort.desc);
+    });
+  }
+
   QueryBuilder<Customer, Customer, QAfterSortBy> thenByIsDeleted() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'isDeleted', Sort.asc);
@@ -1627,6 +1670,12 @@ extension CustomerQueryWhereDistinct
     });
   }
 
+  QueryBuilder<Customer, Customer, QDistinct> distinctByIsArchived() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'isArchived');
+    });
+  }
+
   QueryBuilder<Customer, Customer, QDistinct> distinctByIsDeleted() {
     return QueryBuilder.apply(this, (query) {
       return query.addDistinctBy(r'isDeleted');
@@ -1691,6 +1740,12 @@ extension CustomerQueryProperty
   QueryBuilder<Customer, double, QQueryOperations> currentBalanceProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'currentBalance');
+    });
+  }
+
+  QueryBuilder<Customer, bool, QQueryOperations> isArchivedProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'isArchived');
     });
   }
 

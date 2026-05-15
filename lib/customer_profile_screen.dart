@@ -3,13 +3,44 @@ import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
 import 'package:isar/isar.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'dart:async';
 import 'dart:io';
 
 import 'core/enums/transaction_type.dart';
+import 'core/profile/profile_repository.dart';
+import 'customer_ledger/snackbar_manager.dart';
+import 'data/models/business_profile.dart';
 import 'data/models/customer.dart';
 import 'data/models/transaction.dart' as txn_model;
 import 'providers/settings_provider.dart';
 import 'utils/transaction_labels.dart';
+
+/// Returned from [CustomerProfileScreen] so callers can refresh / unwind.
+enum CustomerProfileResultKind { updated, deleted, moved }
+
+class CustomerProfileResult {
+  final CustomerProfileResultKind kind;
+  final Map<String, dynamic>? customerSnapshot;
+  final List<Map<String, dynamic>>? transactionSnapshots;
+  final String? photoPath;
+  final int? oldProfileId;
+  final int? newProfileId;
+  final String? targetProfileName;
+
+  const CustomerProfileResult({
+    required this.kind,
+    this.customerSnapshot,
+    this.transactionSnapshots,
+    this.photoPath,
+    this.oldProfileId,
+    this.newProfileId,
+    this.targetProfileName,
+  });
+
+  bool get removed =>
+      kind == CustomerProfileResultKind.deleted ||
+      kind == CustomerProfileResultKind.moved;
+}
 
 class CustomerProfileScreen extends StatefulWidget {
   final Isar isar;
@@ -38,6 +69,42 @@ class _CustomerProfileScreenState extends State<CustomerProfileScreen> {
   void initState() {
     super.initState();
     _future = _loadData();
+  }
+
+  final List<OverlayEntry> _overlayEntries = [];
+  final List<Timer> _overlayTimers = [];
+
+  @override
+  void dispose() {
+    for (final timer in _overlayTimers) {
+      try {
+        timer.cancel();
+      } catch (_) {}
+    }
+    _overlayTimers.clear();
+    for (final entry in _overlayEntries) {
+      try {
+        if (entry.mounted) entry.remove();
+      } catch (_) {}
+    }
+    _overlayEntries.clear();
+    super.dispose();
+  }
+
+  void _showUndoSnack({
+    required String message,
+    required IconData icon,
+    required VoidCallback onUndo,
+  }) {
+    SnackBarManager.showTopActionSnackBar(
+      context,
+      message: message,
+      icon: icon,
+      actionLabel: 'UNDO',
+      onAction: onUndo,
+      overlayEntries: _overlayEntries,
+      overlayTimers: _overlayTimers,
+    );
   }
 
   Future<_CustomerProfileData> _loadData() async {
@@ -235,6 +302,14 @@ class _CustomerProfileScreenState extends State<CustomerProfileScreen> {
 
     if (didSave != true || updatedName.isEmpty) return;
 
+    final oldName = customer.name;
+    final oldPhone = customer.phone;
+    final oldUpdatedAt = customer.updatedAt;
+    if (updatedName == oldName &&
+        (updatedPhone.isEmpty ? null : updatedPhone) == oldPhone) {
+      return;
+    }
+
     await widget.isar.writeTxn(() async {
       customer.name = updatedName;
       customer.phone = updatedPhone.isEmpty ? null : updatedPhone;
@@ -246,6 +321,282 @@ class _CustomerProfileScreenState extends State<CustomerProfileScreen> {
     setState(() {
       _future = _loadData();
     });
+    _showUndoSnack(
+      message: 'Customer details updated',
+      icon: Icons.edit_outlined,
+      onUndo: () async {
+        await widget.isar.writeTxn(() async {
+          customer.name = oldName;
+          customer.phone = oldPhone;
+          customer.updatedAt = oldUpdatedAt;
+          await widget.isar.customers.put(customer);
+        });
+        if (!mounted) return;
+        setState(() {
+          _future = _loadData();
+        });
+      },
+    );
+  }
+
+  Future<BusinessProfile?> _pickTargetProfile() async {
+    final profiles = await ProfileRepository.getProfiles(widget.isar);
+    final available =
+        profiles.where((p) => p.id != widget.profileId).toList();
+    if (!mounted) return null;
+
+    if (available.isEmpty) {
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('No other profile'),
+          content: const Text(
+            'Create another business profile first to move this customer.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('OK'),
+            ),
+          ],
+        ),
+      );
+      return null;
+    }
+
+    return showModalBottomSheet<BusinessProfile>(
+      context: context,
+      useSafeArea: true,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.fromLTRB(16, 12, 16, 8),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  'Move to profile',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w600,
+                    fontSize: 16,
+                  ),
+                ),
+              ),
+            ),
+            for (final profile in available)
+              ListTile(
+                leading: const Icon(Icons.business_outlined),
+                title: Text(profile.name),
+                onTap: () => Navigator.pop(sheetContext, profile),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _moveCustomerToAnotherProfile(Customer customer) async {
+    final targetProfile = await _pickTargetProfile();
+    if (!mounted || targetProfile == null) return;
+
+    // Check for name conflict in target profile.
+    final conflict = await widget.isar.customers
+        .filter()
+        .profileIdEqualTo(targetProfile.id)
+        .nameEqualTo(customer.name, caseSensitive: false)
+        .findFirst();
+    if (!mounted) return;
+    if (conflict != null) {
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Name already exists'),
+          content: Text(
+            'A customer named "${customer.name}" already exists in '
+            '${targetProfile.name}. Rename this customer first, then try again.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('OK'),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+
+    final shouldMove = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Move customer'),
+        content: Text(
+          'Move "${customer.name}" to ${targetProfile.name}? '
+          'All transactions will move with this customer.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Move'),
+          ),
+        ],
+      ),
+    );
+    if (shouldMove != true || !mounted) return;
+
+    final oldProfileId = customer.profileId;
+    final relatedTransactions = await widget.isar.transactions
+        .filter()
+        .profileIdEqualTo(oldProfileId)
+        .customerIdEqualTo(customer.id)
+        .findAll();
+    final now = DateTime.now();
+
+    // Snapshot BEFORE the write so undo can restore exact prior state.
+    final customerSnapshot = _snapshotCustomer(customer);
+    final txSnapshots =
+        relatedTransactions.map(_snapshotTxn).toList(growable: false);
+    final prefs = await SharedPreferences.getInstance();
+    final oldKey =
+        'customer_profile_photo_${oldProfileId}_${widget.customerId}';
+    final newKey =
+        'customer_profile_photo_${targetProfile.id}_${widget.customerId}';
+    final existingPath = prefs.getString(oldKey);
+
+    await widget.isar.writeTxn(() async {
+      customer.profileId = targetProfile.id;
+      customer.updatedAt = now;
+      await widget.isar.customers.put(customer);
+      for (final tx in relatedTransactions) {
+        tx.profileId = targetProfile.id;
+        tx.updatedAt = now;
+      }
+      if (relatedTransactions.isNotEmpty) {
+        await widget.isar.transactions.putAll(relatedTransactions);
+      }
+    });
+
+    // Move stored photo path to the new profile's key.
+    if (existingPath != null && existingPath.isNotEmpty) {
+      await prefs.setString(newKey, existingPath);
+      if (oldKey != newKey) {
+        await prefs.remove(oldKey);
+      }
+    }
+
+    if (!mounted) return;
+    Navigator.of(context).pop(
+      CustomerProfileResult(
+        kind: CustomerProfileResultKind.moved,
+        customerSnapshot: customerSnapshot,
+        transactionSnapshots: txSnapshots,
+        photoPath: existingPath,
+        oldProfileId: oldProfileId,
+        newProfileId: targetProfile.id,
+        targetProfileName: targetProfile.name,
+      ),
+    );
+  }
+
+  Future<void> _confirmAndDeleteCustomer(Customer customer) async {
+    final shouldDelete = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete customer?'),
+        content: Text(
+          'This will permanently remove "${customer.name}" and all related '
+          'transactions.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.error,
+              foregroundColor: Theme.of(context).colorScheme.onError,
+            ),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (shouldDelete != true || !mounted) return;
+
+    final relatedTransactions = await widget.isar.transactions
+        .filter()
+        .profileIdEqualTo(widget.profileId)
+        .customerIdEqualTo(widget.customerId)
+        .findAll();
+
+    // Snapshot BEFORE delete for undo.
+    final customerSnapshot = _snapshotCustomer(customer);
+    final txSnapshots =
+        relatedTransactions.map(_snapshotTxn).toList(growable: false);
+    final prefs = await SharedPreferences.getInstance();
+    final savedPhotoPath = prefs.getString(_photoStorageKey);
+
+    await widget.isar.writeTxn(() async {
+      if (relatedTransactions.isNotEmpty) {
+        await widget.isar.transactions
+            .deleteAll(relatedTransactions.map((t) => t.id).toList());
+      }
+      await widget.isar.customers.delete(widget.customerId);
+    });
+
+    await prefs.remove(_photoStorageKey);
+
+    if (!mounted) return;
+    Navigator.of(context).pop(
+      CustomerProfileResult(
+        kind: CustomerProfileResultKind.deleted,
+        customerSnapshot: customerSnapshot,
+        transactionSnapshots: txSnapshots,
+        photoPath: savedPhotoPath,
+        oldProfileId: widget.profileId,
+      ),
+    );
+  }
+
+  Map<String, dynamic> _snapshotCustomer(Customer c) {
+    return {
+      'id': c.id,
+      'profileId': c.profileId,
+      'uuid': c.uuid,
+      'name': c.name,
+      'phone': c.phone,
+      'note': c.note,
+      'currentBalance': c.currentBalance,
+      'isDeleted': c.isDeleted,
+      'createdAt': c.createdAt,
+      'updatedAt': c.updatedAt,
+    };
+  }
+
+  Map<String, dynamic> _snapshotTxn(txn_model.Transaction t) {
+    return {
+      'id': t.id,
+      'profileId': t.profileId,
+      'uuid': t.uuid,
+      'customerId': t.customerId,
+      'type': t.type,
+      'amount': t.amount,
+      'note': t.note,
+      'photoPath': t.photoPath,
+      'photoPaths': List<String>.from(t.photoPaths),
+      'date': t.date,
+      'isDeleted': t.isDeleted,
+      'isEdited': t.isEdited,
+      'createdAt': t.createdAt,
+      'updatedAt': t.updatedAt,
+    };
   }
 
   String _formatAmount(double amount) {
@@ -271,6 +622,48 @@ class _CustomerProfileScreenState extends State<CustomerProfileScreen> {
       appBar: AppBar(
         titleSpacing: 0,
         title: const Text('Customer Profile'),
+        actions: [
+          PopupMenuButton<String>(
+            icon: const Icon(Icons.more_vert),
+            tooltip: 'More options',
+            onSelected: (value) async {
+              final customer =
+                  await widget.isar.customers.get(widget.customerId);
+              if (!mounted || customer == null) return;
+              if (value == 'move') {
+                await _moveCustomerToAnotherProfile(customer);
+              } else if (value == 'delete') {
+                await _confirmAndDeleteCustomer(customer);
+              }
+            },
+            itemBuilder: (context) => [
+              const PopupMenuItem<String>(
+                value: 'move',
+                child: ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(Icons.move_down_rounded),
+                  title: Text('Move to another profile'),
+                ),
+              ),
+              PopupMenuItem<String>(
+                value: 'delete',
+                child: ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(
+                    Icons.delete_outline,
+                    color: Theme.of(context).colorScheme.error,
+                  ),
+                  title: Text(
+                    'Delete customer',
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
       ),
       body: FutureBuilder<_CustomerProfileData>(
         future: _future,

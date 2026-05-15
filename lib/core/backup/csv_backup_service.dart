@@ -990,6 +990,7 @@ class CsvBackupService {
           ..note = _nullIfEmpty(_field(row, 6))
           ..currentBalance = double.tryParse(_field(row, 7)) ?? 0
           ..isDeleted = false
+          ..isArchived = _field(row, 11) == '1'
           ..createdAt =
               _parseDate(_field(row, 9)) ??
               (existingCustomer?.createdAt ?? DateTime.now())
@@ -1526,6 +1527,7 @@ class CsvBackupService {
           customer.isDeleted ? '1' : '0',
           customer.createdAt.toIso8601String(),
           customer.updatedAt.toIso8601String(),
+          customer.isArchived ? '1' : '0',
         ]),
       );
     }
@@ -1666,6 +1668,7 @@ class CsvBackupService {
         customer.note = _nullIfEmpty(_field(row, 6));
         customer.currentBalance = double.tryParse(_field(row, 7)) ?? 0;
         customer.isDeleted = _field(row, 8) == '1';
+        customer.isArchived = _field(row, 11) == '1';
         customer.createdAt = _parseDate(_field(row, 9)) ?? customer.createdAt;
         customer.updatedAt = _parseDate(_field(row, 10)) ?? DateTime.now();
 

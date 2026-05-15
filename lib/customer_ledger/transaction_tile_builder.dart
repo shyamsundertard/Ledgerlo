@@ -1,4 +1,5 @@
 import 'dart:typed_data';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
@@ -308,96 +309,138 @@ class TransactionTileBuilder {
                                       MainAxisAlignment.spaceBetween,
                                   crossAxisAlignment: CrossAxisAlignment.center,
                                   children: [
-                                    Row(
-                                      children: [
-                                        Icon(
-                                          isCredit ? Icons.south : Icons.north,
-                                          size: 16,
-                                          color: isCredit
-                                              ? (Theme.of(context).brightness ==
-                                                        Brightness.light
-                                                    ? Colors.green.shade700
-                                                    : Colors.green.shade300)
-                                              : (Theme.of(context).brightness ==
-                                                        Brightness.light
-                                                    ? Colors.red.shade700
-                                                    : Colors.red.shade300),
-                                        ),
-                                        const SizedBox(width: 8),
-                                        Text(
-                                          formatAmount(t.amount),
-                                          style:
-                                              Theme.of(context)
-                                                  .textTheme
-                                                  .headlineSmall
-                                                  ?.copyWith(
+                                    Flexible(
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Icon(
+                                            isCredit
+                                                ? Icons.south
+                                                : Icons.north,
+                                            size: 16,
+                                            color: isCredit
+                                                ? (Theme.of(context).brightness ==
+                                                          Brightness.light
+                                                      ? Colors.green.shade700
+                                                      : Colors.green.shade300)
+                                                : (Theme.of(context).brightness ==
+                                                          Brightness.light
+                                                      ? Colors.red.shade700
+                                                      : Colors.red.shade300),
+                                          ),
+                                          const SizedBox(width: 8),
+                                          Flexible(
+                                            child: Text(
+                                              formatAmount(t.amount),
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                              style:
+                                                  Theme.of(context)
+                                                      .textTheme
+                                                      .headlineSmall
+                                                      ?.copyWith(
+                                                        fontWeight:
+                                                            FontWeight.w800,
+                                                        fontSize: 18,
+                                                        decoration:
+                                                            TextDecoration
+                                                                .lineThrough,
+                                                        decorationThickness:
+                                                            3.0,
+                                                        decorationColor:
+                                                            Theme.of(
+                                                                  context,
+                                                                ).brightness ==
+                                                                Brightness.light
+                                                            ? const Color(
+                                                                0xFF3c5152,
+                                                              ).withOpacity(
+                                                                0.55,
+                                                              )
+                                                            : Colors
+                                                                  .grey
+                                                                  .shade300
+                                                                  .withOpacity(
+                                                                    0.55,
+                                                                  ),
+                                                        color:
+                                                            Theme.of(
+                                                                  context,
+                                                                ).brightness ==
+                                                                Brightness.light
+                                                            ? const Color(
+                                                                0xFF3c5152,
+                                                              ).withOpacity(
+                                                                0.55,
+                                                              )
+                                                            : Colors
+                                                                  .grey
+                                                                  .shade300
+                                                                  .withOpacity(
+                                                                    0.55,
+                                                                  ),
+                                                      ) ??
+                                                  TextStyle(
                                                     fontWeight: FontWeight.w800,
                                                     fontSize: 18,
                                                     decoration: TextDecoration
                                                         .lineThrough,
-                                                    color:
-                                                        Theme.of(
-                                                              context,
-                                                            ).brightness ==
-                                                            Brightness.light
-                                                        ? const Color(
-                                                            0xFF3c5152,
-                                                          )
-                                                        : Colors.grey.shade300,
-                                                  ) ??
-                                              const TextStyle(
-                                                fontWeight: FontWeight.w800,
-                                                fontSize: 18,
-                                                decoration:
-                                                    TextDecoration.lineThrough,
-                                              ),
-                                        ),
-                                        if (showEditedBadge) ...[
-                                          const SizedBox(width: 8),
-                                          _editedBadge(context),
+                                                    decorationThickness: 3.0,
+                                                    color: Colors.grey
+                                                        .withOpacity(0.55),
+                                                  ),
+                                            ),
+                                          ),
                                         ],
-                                        const SizedBox(width: 8),
-                                        Container(
-                                          padding: const EdgeInsets.symmetric(
-                                            horizontal: 8,
-                                            vertical: 2,
-                                          ),
-                                          decoration: BoxDecoration(
-                                            color: Colors.grey.shade300,
-                                            borderRadius: BorderRadius.circular(
-                                              4,
-                                            ),
-                                          ),
-                                          child: const Text(
-                                            'Deleted',
-                                            style: TextStyle(
-                                              fontSize: 10,
-                                              fontWeight: FontWeight.w600,
-                                              color: Colors.black54,
-                                            ),
-                                          ),
-                                        ),
-                                      ],
+                                      ),
                                     ),
-                                    Expanded(
-                                      child: Align(
-                                        alignment: Alignment.centerRight,
-                                        child: Text(
-                                          timeStr,
-                                          style: Theme.of(context)
-                                              .textTheme
-                                              .bodySmall
-                                              ?.copyWith(
-                                                fontSize: 12,
-                                                fontWeight: FontWeight.w400,
-                                                color:
-                                                    Theme.of(
-                                                          context,
-                                                        ).brightness ==
-                                                        Brightness.light
-                                                    ? const Color(0xFF3c5152)
-                                                    : Colors.grey.shade300,
-                                              ),
+                                    const SizedBox(width: 8),
+                                    Text(
+                                      timeStr,
+                                      maxLines: 1,
+                                      softWrap: false,
+                                      overflow: TextOverflow.visible,
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .bodySmall
+                                          ?.copyWith(
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w400,
+                                            color:
+                                                Theme.of(context).brightness ==
+                                                    Brightness.light
+                                                ? const Color(0xFF3c5152)
+                                                : Colors.grey.shade300,
+                                          ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 6),
+                                Wrap(
+                                  spacing: 8,
+                                  runSpacing: 4,
+                                  crossAxisAlignment: WrapCrossAlignment.center,
+                                  children: [
+                                    if (showEditedBadge) _editedBadge(context),
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 8,
+                                        vertical: 2,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: Colors.grey.shade300,
+                                        borderRadius: BorderRadius.circular(4),
+                                      ),
+                                      child: Text(
+                                        'Deleted',
+                                        style: TextStyle(
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.w700,
+                                          color:
+                                              Theme.of(context).brightness ==
+                                                  Brightness.light
+                                              ? Colors.red.shade700
+                                              : Colors.red.shade300,
                                         ),
                                       ),
                                     ),
@@ -405,8 +448,8 @@ class TransactionTileBuilder {
                                 ),
                                 if ((t.note ?? '').isNotEmpty) ...[
                                   const SizedBox(height: 6),
-                                  Text(
-                                    t.note ?? '',
+                                  _ExpandableNote(
+                                    text: t.note ?? '',
                                     style:
                                         Theme.of(
                                           context,
@@ -423,7 +466,6 @@ class TransactionTileBuilder {
                                           fontSize: 12,
                                           color: Colors.black54,
                                         ),
-                                    overflow: TextOverflow.ellipsis,
                                   ),
                                 ],
                               ],
@@ -553,77 +595,87 @@ class TransactionTileBuilder {
                                     MainAxisAlignment.spaceBetween,
                                 crossAxisAlignment: CrossAxisAlignment.center,
                                 children: [
-                                  Row(
-                                    children: [
-                                      Icon(
-                                        isCredit ? Icons.south : Icons.north,
-                                        size: 16,
-                                        color: isCredit
-                                            ? (Theme.of(context).brightness ==
-                                                      Brightness.light
-                                                  ? Colors.green.shade800
-                                                  : Colors.green.shade400)
-                                            : (Theme.of(context).brightness ==
-                                                      Brightness.light
-                                                  ? Colors.red.shade900
-                                                  : Colors.red.shade400),
-                                      ),
-                                      const SizedBox(width: 8),
-                                      Text(
-                                        formatAmount(t.amount),
-                                        style:
-                                            Theme.of(
-                                              context,
-                                            ).textTheme.headlineSmall?.copyWith(
-                                              fontWeight: FontWeight.w800,
-                                              fontSize: 18,
-                                              color:
-                                                  Theme.of(
-                                                        context,
-                                                      ).brightness ==
-                                                      Brightness.light
-                                                  ? const Color(0xFF3c5152)
-                                                  : Colors.grey.shade300,
-                                            ) ??
-                                            const TextStyle(
-                                              fontWeight: FontWeight.w800,
-                                              fontSize: 18,
-                                            ),
-                                      ),
-                                      if (showEditedBadge) ...[
+                                  Flexible(
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(
+                                          isCredit ? Icons.south : Icons.north,
+                                          size: 16,
+                                          color: isCredit
+                                              ? (Theme.of(context).brightness ==
+                                                        Brightness.light
+                                                    ? Colors.green.shade800
+                                                    : Colors.green.shade400)
+                                              : (Theme.of(context).brightness ==
+                                                        Brightness.light
+                                                    ? Colors.red.shade900
+                                                    : Colors.red.shade400),
+                                        ),
                                         const SizedBox(width: 8),
-                                        _editedBadge(context),
+                                        Flexible(
+                                          child: Text(
+                                            formatAmount(t.amount),
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                            style:
+                                                Theme.of(context)
+                                                    .textTheme
+                                                    .headlineSmall
+                                                    ?.copyWith(
+                                                      fontWeight:
+                                                          FontWeight.w800,
+                                                      fontSize: 18,
+                                                      color:
+                                                          Theme.of(
+                                                                context,
+                                                              ).brightness ==
+                                                              Brightness.light
+                                                          ? const Color(
+                                                              0xFF3c5152,
+                                                            )
+                                                          : Colors
+                                                                .grey
+                                                                .shade300,
+                                                    ) ??
+                                                const TextStyle(
+                                                  fontWeight: FontWeight.w800,
+                                                  fontSize: 18,
+                                                ),
+                                          ),
+                                        ),
                                       ],
-                                    ],
-                                  ),
-                                  Expanded(
-                                    child: Align(
-                                      alignment: Alignment.centerRight,
-                                      child: Text(
-                                        timeStr,
-                                        style: Theme.of(context)
-                                            .textTheme
-                                            .bodySmall
-                                            ?.copyWith(
-                                              fontSize: 12,
-                                              fontWeight: FontWeight.w400,
-                                              color:
-                                                  Theme.of(
-                                                        context,
-                                                      ).brightness ==
-                                                      Brightness.light
-                                                  ? const Color(0xFF3c5152)
-                                                  : Colors.grey.shade300,
-                                            ),
-                                      ),
                                     ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Text(
+                                    timeStr,
+                                    maxLines: 1,
+                                    softWrap: false,
+                                    overflow: TextOverflow.visible,
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .bodySmall
+                                        ?.copyWith(
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.w400,
+                                          color:
+                                              Theme.of(context).brightness ==
+                                                  Brightness.light
+                                              ? const Color(0xFF3c5152)
+                                              : Colors.grey.shade300,
+                                        ),
                                   ),
                                 ],
                               ),
+                              if (showEditedBadge) ...[
+                                const SizedBox(height: 6),
+                                _editedBadge(context),
+                              ],
                               if ((t.note ?? '').isNotEmpty) ...[
                                 const SizedBox(height: 6),
-                                Text(
-                                  t.note ?? '',
+                                _ExpandableNote(
+                                  text: t.note ?? '',
                                   style:
                                       Theme.of(
                                         context,
@@ -640,8 +692,6 @@ class TransactionTileBuilder {
                                         fontSize: 12,
                                         color: Colors.black54,
                                       ),
-                                  maxLines: 3,
-                                  overflow: TextOverflow.ellipsis,
                                 ),
                               ],
                               if (photoPaths.isNotEmpty) ...[
@@ -676,6 +726,86 @@ class TransactionTileBuilder {
           ),
         ),
       ),
+    );
+  }
+}
+
+class _ExpandableNote extends StatefulWidget {
+  const _ExpandableNote({
+    required this.text,
+    required this.style,
+  });
+
+  final String text;
+  final TextStyle style;
+  static const int _collapsedMaxLines = 5;
+
+  @override
+  State<_ExpandableNote> createState() => _ExpandableNoteState();
+}
+
+class _ExpandableNoteState extends State<_ExpandableNote> {
+  bool _expanded = false;
+
+  bool _exceedsLines(double maxWidth, int maxLines) {
+    final tp = TextPainter(
+      text: TextSpan(text: widget.text, style: widget.style),
+      maxLines: maxLines,
+      textDirection: ui.TextDirection.ltr,
+      textScaler: MediaQuery.of(context).textScaler,
+    )..layout(maxWidth: maxWidth);
+    return tp.didExceedMaxLines;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final maxWidth = constraints.maxWidth.isFinite
+            ? constraints.maxWidth
+            : MediaQuery.of(context).size.width;
+        final overflowsCollapsed =
+            _exceedsLines(maxWidth, _ExpandableNote._collapsedMaxLines);
+        final maxLines = _expanded
+            ? null
+            : _ExpandableNote._collapsedMaxLines;
+
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              widget.text,
+              style: widget.style,
+              maxLines: maxLines,
+              overflow: _expanded
+                  ? TextOverflow.visible
+                  : TextOverflow.ellipsis,
+            ),
+            if (overflowsCollapsed)
+              Padding(
+                padding: const EdgeInsets.only(top: 2),
+                child: InkWell(
+                  onTap: () => setState(() => _expanded = !_expanded),
+                  borderRadius: BorderRadius.circular(4),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 4,
+                      vertical: 2,
+                    ),
+                    child: Text(
+                      _expanded ? 'Show less' : 'Show more',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        color: Theme.of(context).colorScheme.primary,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        );
+      },
     );
   }
 }
